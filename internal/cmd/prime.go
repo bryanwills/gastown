@@ -553,7 +553,7 @@ var memoryTypeLabels = map[string]string{
 	"feedback":  "Behavioral Rules (from user feedback)",
 	"user":      "User Context",
 	"project":   "Project Context",
-	"reference":  "Reference Links",
+	"reference": "Reference Links",
 	"general":   "General",
 }
 
@@ -666,8 +666,8 @@ func hasWorkflowAttachment(attachment *beads.AttachmentFields) bool {
 }
 
 // findAgentWork looks up hooked or in-progress beads assigned to this agent.
-// Primary: reads hook_bead from the agent bead (same strategy as detectSessionState/gt hook).
-// Fallback: queries by assignee for agents without an agent bead.
+// Primary: queries active work by assignee. Worker roles still check the legacy
+// hook_bead slot first to preserve cross-rig unresolvable-hook diagnostics.
 // For polecats and crew, retries up to 3 times with 2-second delays to handle
 // the timing race where hook state hasn't propagated by the time gt prime runs.
 // See: https://github.com/steveyegge/gastown/issues/1438
@@ -760,84 +760,51 @@ func findAgentWorkOnce(ctx RoleContext, agentID string) (*beads.Issue, error) {
 	// polecats to miss hooked work and exit immediately. The rig root directory
 	// always has the authoritative .beads/ database. (GH#2503)
 	b := beads.New(rigBeadsRoot(ctx))
+	assignees := activeWorkAssignees(ctx, agentID)
 
-	// Agent bead's hook_bead field. NOTE: updateAgentHookBead was made a no-op
-	// (see sling_helpers.go), so HookBead is typically empty. Kept for backward
-	// compatibility with agent beads that still have hook_bead set.
-	agentBeadID := buildAgentBeadID(agentID, ctx.Role, ctx.TownRoot)
-	if agentBeadID != "" {
-		agentBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBeadID, ctx.WorkDir)
-		ab := beads.New(agentBeadDir)
-		if agentBead, err := ab.Show(agentBeadID); err == nil && agentBead != nil && agentBead.HookBead != "" {
-			hookBeadDir := beads.ResolveHookDir(ctx.TownRoot, agentBead.HookBead, ctx.WorkDir)
-			hb := beads.New(hookBeadDir)
-			hookBead, showErr := hb.Show(agentBead.HookBead)
-			if showErr == nil && hookBead != nil &&
-				(hookBead.Status == beads.StatusHooked || hookBead.Status == "in_progress") {
-				return hookBead, nil
-			}
-			// The agent bead names a hook bead but `bd show` cannot find it.
-			// This is the cross-rig dispatch failure mode (gt-el4): an `hq-`
-			// bead was handed to a polecat whose DB only resolves `gt-`. Fail
-			// fast — never pontificate, the witness will clear the hook on
-			// its next sweep and the dispatcher will (or won't) re-issue.
-			if hookBead == nil || isBeadNotFound(showErr) {
-				return nil, fmt.Errorf("%w: agent=%s hook_bead=%s cwd=%s: %v",
-					ErrHookUnresolvable, agentID, agentBead.HookBead, ctx.WorkDir, showErr)
-			}
-		}
-	}
-
-	// Fallback: query by assignee
-	hookedBeads, err := b.List(beads.ListOptions{
-		Status:   beads.StatusHooked,
-		Assignee: agentID,
-		Priority: -1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("querying hooked beads: %w", err)
-	}
-
-	// Fall back to in_progress beads (session interrupted before completion)
-	if len(hookedBeads) == 0 {
-		inProgressBeads, err := b.List(beads.ListOptions{
-			Status:   "in_progress",
-			Assignee: agentID,
-			Priority: -1,
-		})
+	if shouldCheckLegacyHookBeadBeforeActive(ctx) {
+		legacyHookBead, err := lookupLegacyAgentHookBead(ctx, agentID)
 		if err != nil {
-			return nil, fmt.Errorf("querying in-progress beads: %w", err)
+			return nil, err
 		}
-		if len(inProgressBeads) > 0 {
-			hookedBeads = inProgressBeads
+		if legacyHookBead != nil {
+			return legacyHookBead, nil
 		}
+	}
+
+	// Primary: query active work by assignee in one hot-path lookup. The
+	// legacy agent-bead hook_bead slot is no longer maintained for normal
+	// dispatch, so avoid paying that lookup on every mayor/deacon prime.
+	hookedBead, err := findActiveAssignedWorkForAssignees(b, assignees)
+	if err != nil {
+		return nil, fmt.Errorf("querying active work: %w", err)
 	}
 
 	// Town-level fallback: rig-level agents (polecats, crew) may have hooked
 	// HQ beads (hq-* prefix) stored in townRoot/.beads, not the rig's database.
 	// Matches the fallback in molecule_status.go and unsling.go. (gt-dtq7)
-	if len(hookedBeads) == 0 && !isTownLevelRole(agentID) && ctx.TownRoot != "" {
+	if hookedBead == nil && len(assignees) > 0 && !isTownLevelRole(assignees[0]) && ctx.TownRoot != "" {
 		townB := beads.New(filepath.Join(ctx.TownRoot, ".beads"))
-		if townHooked, err := townB.List(beads.ListOptions{
-			Status:   beads.StatusHooked,
-			Assignee: agentID,
-			Priority: -1,
-		}); err == nil && len(townHooked) > 0 {
-			hookedBeads = townHooked
-		} else if townIP, err := townB.List(beads.ListOptions{
-			Status:   "in_progress",
-			Assignee: agentID,
-			Priority: -1,
-		}); err == nil && len(townIP) > 0 {
-			hookedBeads = townIP
+		if townHookBead, err := findActiveAssignedWorkForAssignees(townB, assignees); err == nil && townHookBead != nil {
+			hookedBead = townHookBead
 		}
 		// Town-level fallback errors are non-fatal — rig-level query succeeded
 	}
 
-	if len(hookedBeads) == 0 {
+	// Legacy worker fallback: older hooks may still be stored only in the agent
+	// bead's hook_bead field. Keep this off the mayor hot path.
+	if hookedBead == nil && shouldCheckLegacyHookBead(ctx) && !shouldCheckLegacyHookBeadBeforeActive(ctx) {
+		legacyHookBead, err := lookupLegacyAgentHookBead(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		hookedBead = legacyHookBead
+	}
+
+	if hookedBead == nil {
 		return nil, nil
 	}
-	return hookedBeads[0], nil
+	return hookedBead, nil
 }
 
 // rigBeadsRoot returns the directory to use for beads queries.

@@ -14,22 +14,22 @@ import (
 // Embeds beadsdk.Storage to satisfy unimplemented methods (they panic if called).
 type mockStorage struct {
 	beadsdk.Storage // embedded for unimplemented methods
-	issues     map[string]*beadsdk.Issue
-	labels     map[string][]string // issueID -> labels
-	deps       map[string][]string // issueID -> depends-on IDs
-	nextID     int
-	prefix     string
-	closed     map[string]bool
-	closeErr   error
-	createErr  error
-	updateErr  error
-	searchErr  error
-	getErr     error
-	addLabelErr    error
-	removeLabelErr error
-	addDepErr      error
-	removeDepErr   error
-	getLabelsErr   error
+	issues          map[string]*beadsdk.Issue
+	labels          map[string][]string // issueID -> labels
+	deps            map[string][]string // issueID -> depends-on IDs
+	nextID          int
+	prefix          string
+	closed          map[string]bool
+	closeErr        error
+	createErr       error
+	updateErr       error
+	searchErr       error
+	getErr          error
+	addLabelErr     error
+	removeLabelErr  error
+	addDepErr       error
+	removeDepErr    error
+	getLabelsErr    error
 }
 
 func newMockStorage() *mockStorage {
@@ -135,6 +135,18 @@ func (m *mockStorage) SearchIssues(_ context.Context, query string, filter beads
 		if filter.Status != nil && issue.Status != *filter.Status {
 			continue
 		}
+		if len(filter.Statuses) > 0 {
+			matchedStatus := false
+			for _, status := range filter.Statuses {
+				if issue.Status == status {
+					matchedStatus = true
+					break
+				}
+			}
+			if !matchedStatus {
+				continue
+			}
+		}
 		if filter.Assignee != nil && issue.Assignee != *filter.Assignee {
 			continue
 		}
@@ -214,7 +226,6 @@ func (m *mockStorage) RemoveDependency(_ context.Context, issueID, dependsOnID, 
 	return nil
 }
 
-
 func (m *mockStorage) AddLabel(_ context.Context, issueID, label, _ string) error {
 	if m.addLabelErr != nil {
 		return m.addLabelErr
@@ -290,6 +301,33 @@ func TestStoreList(t *testing.T) {
 	}
 	if len(issues) != 2 {
 		t.Fatalf("expected 2 issues, got %d", len(issues))
+	}
+}
+
+func TestStoreListCommaSeparatedStatuses(t *testing.T) {
+	store := newMockStorage()
+	b := newTestBeads(store)
+
+	store.issues["test-hooked"] = &beadsdk.Issue{ID: "test-hooked", Title: "hooked", Status: beadsdk.Status("hooked"), Assignee: "mayor/"}
+	store.issues["test-in-progress"] = &beadsdk.Issue{ID: "test-in-progress", Title: "ip", Status: beadsdk.Status("in_progress"), Assignee: "mayor/"}
+	store.issues["test-open"] = &beadsdk.Issue{ID: "test-open", Title: "open", Status: beadsdk.StatusOpen, Assignee: "mayor/"}
+	store.issues["test-other"] = &beadsdk.Issue{ID: "test-other", Title: "other", Status: beadsdk.Status("hooked"), Assignee: "deacon/"}
+
+	issues, err := b.List(ListOptions{Status: "hooked,in_progress", Assignee: "mayor/", Priority: -1})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("List returned %d issues, want 2: %#v", len(issues), issues)
+	}
+	got := map[string]bool{}
+	for _, issue := range issues {
+		got[issue.ID] = true
+	}
+	for _, want := range []string{"test-hooked", "test-in-progress"} {
+		if !got[want] {
+			t.Fatalf("missing %s from results %#v", want, got)
+		}
 	}
 }
 

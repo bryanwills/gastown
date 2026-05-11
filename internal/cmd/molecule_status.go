@@ -336,7 +336,7 @@ func runMoleculeStatus(cmd *cobra.Command, args []string) error {
 
 	if len(args) > 0 {
 		// Explicit target provided
-		target = args[0]
+		target = canonicalActiveWorkTarget(args[0])
 	} else {
 		// Use cwd-based detection for status display
 		// This ensures we show the hook for the agent whose directory we're in,
@@ -405,57 +405,33 @@ func runMoleculeStatus(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Query for hooked beads using the authoritative source: bead status + assignee.
-		// First try status=hooked (work that's been slung but not yet claimed)
-		hookedBeads, err := b.List(beads.ListOptions{
-			Status:   beads.StatusHooked,
-			Assignee: target,
-			Priority: -1,
-		})
+		// Query for active work using the authoritative source: bead status + assignee.
+		assignees := activeWorkTargetAliases(target)
+		hookBead, err := findActiveAssignedWorkForAssignees(b, assignees)
 		if err != nil {
 			return nil
 		}
 
-		// If no hooked beads found, also check in_progress beads assigned to this agent.
-		// This handles the case where work was claimed (status changed to in_progress)
-		// but the session was interrupted before completion. The hook should persist.
-		if len(hookedBeads) == 0 {
-			inProgressBeads, _ := b.List(beads.ListOptions{
-				Status:   "in_progress",
-				Assignee: target,
-				Priority: -1,
-			})
-			hookedBeads = inProgressBeads
-		}
-
 		// For town-level roles (mayor, deacon), scan all rigs if nothing found locally
-		if len(hookedBeads) == 0 && isTownLevelRole(target) {
-			hookedBeads = scanAllRigsForHookedBeads(townRoot, target)
+		if hookBead == nil && isTownLevelRole(target) {
+			if hookedBeads := scanAllRigsForHookedBeads(townRoot, target); len(hookedBeads) > 0 {
+				hookBead = hookedBeads[0]
+			}
 		}
 
 		// For rig-level agents (polecats, crew), also search town-level beads.
 		// When the Mayor slings an hq-* bead to a polecat, the bead lives in
 		// townRoot/.beads, not the rig's .beads database.
 		// See: https://github.com/steveyegge/gastown/issues/1438
-		if len(hookedBeads) == 0 && !isTownLevelRole(target) && townRoot != "" {
+		if hookBead == nil && len(assignees) > 0 && !isTownLevelRole(assignees[0]) && townRoot != "" {
 			townB := beads.New(filepath.Join(townRoot, ".beads"))
-			if townHooked, err := townB.List(beads.ListOptions{
-				Status:   beads.StatusHooked,
-				Assignee: target,
-				Priority: -1,
-			}); err == nil && len(townHooked) > 0 {
-				hookedBeads = townHooked
-			} else if townInProgress, err := townB.List(beads.ListOptions{
-				Status:   "in_progress",
-				Assignee: target,
-				Priority: -1,
-			}); err == nil && len(townInProgress) > 0 {
-				hookedBeads = townInProgress
+			if townHookBead, err := findActiveAssignedWorkForAssignees(townB, assignees); err == nil && townHookBead != nil {
+				hookBead = townHookBead
 			}
 		}
 
-		if len(hookedBeads) > 0 {
-			return hookedBeads[0]
+		if hookBead != nil {
+			return hookBead
 		}
 		return nil
 	}
@@ -466,7 +442,8 @@ func runMoleculeStatus(cmd *cobra.Command, args []string) error {
 	var hookBead *beads.Issue
 	isPolecat := roleCtx.Role == RolePolecat ||
 		(os.Getenv("GT_ROLE") != "" && func() bool {
-			r, _, _ := parseRoleString(os.Getenv("GT_ROLE")); return r == RolePolecat
+			r, _, _ := parseRoleString(os.Getenv("GT_ROLE"))
+			return r == RolePolecat
 		}())
 
 	hookBead = lookupHookedWork()
@@ -1214,32 +1191,13 @@ func scanAllRigsForHookedBeads(townRoot, target string) []*beads.Issue {
 		}
 
 		b := beads.New(rigBeadsDir)
-		// First check for hooked beads
-		hookedBeads, err := b.List(beads.ListOptions{
-			Status:   beads.StatusHooked,
-			Assignee: target,
-			Priority: -1,
-		})
+		hookBead, err := findActiveAssignedWorkForAssignees(b, activeWorkTargetAliases(target))
 		if err != nil {
 			continue
 		}
 
-		if len(hookedBeads) > 0 {
-			return hookedBeads
-		}
-
-		// Also check for in_progress beads (work that was claimed but session interrupted)
-		inProgressBeads, err := b.List(beads.ListOptions{
-			Status:   "in_progress",
-			Assignee: target,
-			Priority: -1,
-		})
-		if err != nil {
-			continue
-		}
-
-		if len(inProgressBeads) > 0 {
-			return inProgressBeads
+		if hookBead != nil {
+			return []*beads.Issue{hookBead}
 		}
 	}
 
