@@ -627,6 +627,13 @@ Supported keys:
   scheduler.max_polecats      Dispatch mode: -1 = direct (default), N > 0 = deferred
   scheduler.batch_size        Beads per heartbeat (default: 1)
   scheduler.spawn_delay       Delay between spawns (default: 0s)
+
+  Zombie cleanup:
+  zombie.auto_cleanup         Auto-nuke clean idle polecats (true/false)
+  zombie.idle_threshold       Idle duration before cleanup (e.g., 2h)
+  zombie.hung_threshold       Inactivity duration before restart (e.g., 30m)
+  zombie.protected            Comma-separated polecat names exempt from auto-nuke
+
   maintenance.window          Maintenance window start time in HH:MM (e.g., "03:00")
   maintenance.interval        How often: "daily", "weekly", "monthly", or duration
   maintenance.threshold       Commit count threshold (default: 1000)
