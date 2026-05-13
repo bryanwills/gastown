@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/lock"
 	"github.com/steveyegge/gastown/internal/state"
 	"github.com/steveyegge/gastown/internal/style"
@@ -687,8 +688,13 @@ type primeGateIssue struct {
 // This closes the recovery gap where bd gate check closes a gate but the Deacon
 // dies before sending a wake: the next gt prime tells the waiter to resume.
 func checkParkedWork(ctx RoleContext) bool {
+	if ctx.Role != RolePolecat && ctx.Role != RoleCrew {
+		return false
+	}
+
 	aliases := gateWaiterAliases(ctx)
-	if len(aliases) == 0 || !agentMayHaveParkedWork(ctx) {
+	parkedGateIDs, hasParkedFile := readPrimeParkedGateIDs(ctx)
+	if len(aliases) == 0 || (!hasParkedFile && !agentMayHaveParkedWork(ctx)) {
 		return false
 	}
 
@@ -698,7 +704,7 @@ func checkParkedWork(ctx RoleContext) bool {
 		return false
 	}
 
-	gate := findClearedGateForWaiter(gates, aliases)
+	gate := findClearedGateForWaiter(gates, aliases, parkedGateIDs)
 	if gate == nil {
 		return false
 	}
@@ -738,19 +744,90 @@ func gateWaiterAliases(ctx RoleContext) []string {
 func agentMayHaveParkedWork(ctx RoleContext) bool {
 	agentBeadID := getAgentBeadID(ctx)
 	if agentBeadID == "" {
-		return true
+		return false
 	}
 
 	ab := beads.New(beads.ResolveHookDir(ctx.TownRoot, agentBeadID, ctx.WorkDir))
 	agentBead, err := ab.Show(agentBeadID)
 	if err != nil || agentBead == nil {
-		// Older parked-work paths persisted only the gate waiter. Do not make a
-		// missing agent bead suppress recovery from a closed gate.
-		return true
+		return false
 	}
 
 	state := beads.ResolveAgentState(agentBead.Description, agentBead.AgentState)
-	return state == "" || state == string(beads.AgentStateAwaitingGate)
+	return state == string(beads.AgentStateAwaitingGate)
+}
+
+func readPrimeParkedGateIDs(ctx RoleContext) (map[string]bool, bool) {
+	gateIDs := make(map[string]bool)
+	found := false
+	for _, path := range primeParkedWorkFiles(ctx) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		found = true
+		collectGateIDsFromParkedJSON(data, gateIDs)
+	}
+	return gateIDs, found
+}
+
+func primeParkedWorkFiles(ctx RoleContext) []string {
+	seen := make(map[string]bool)
+	var paths []string
+	add := func(path string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+
+	names := []string{"parked.json"}
+	if ctx.Polecat != "" {
+		names = append(names, fmt.Sprintf("parked-%s.json", ctx.Polecat))
+	}
+	if identity := getAgentIdentity(ctx); identity != "" {
+		safeIdentity := strings.NewReplacer("/", "-", string(filepath.Separator), "-").Replace(identity)
+		names = append(names, fmt.Sprintf("parked-%s.json", safeIdentity))
+	}
+
+	dirs := []string{filepath.Join(ctx.WorkDir, constants.DirRuntime)}
+	if home := getRoleHome(ctx.Role, ctx.Rig, ctx.Polecat, ctx.TownRoot); home != "" && home != ctx.WorkDir {
+		dirs = append(dirs, filepath.Join(home, constants.DirRuntime))
+	}
+
+	for _, dir := range dirs {
+		for _, name := range names {
+			add(filepath.Join(dir, name))
+		}
+	}
+	return paths
+}
+
+func collectGateIDsFromParkedJSON(data []byte, gateIDs map[string]bool) {
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return
+	}
+	collectGateIDsFromValue(value, gateIDs)
+}
+
+func collectGateIDsFromValue(value any, gateIDs map[string]bool) {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			if s, ok := child.(string); ok && strings.Contains(strings.ToLower(key), "gate") {
+				if s = strings.TrimSpace(s); s != "" {
+					gateIDs[s] = true
+				}
+			}
+			collectGateIDsFromValue(child, gateIDs)
+		}
+	case []any:
+		for _, child := range v {
+			collectGateIDsFromValue(child, gateIDs)
+		}
+	}
 }
 
 func listPrimeGates(ctx RoleContext) ([]primeGateIssue, error) {
@@ -798,15 +875,22 @@ func stripPrimeBDWarnings(data []byte) []byte {
 	return bytes.Join(cleaned, []byte("\n"))
 }
 
-func findClearedGateForWaiter(gates []primeGateIssue, aliases []string) *primeGateIssue {
+func findClearedGateForWaiter(gates []primeGateIssue, aliases []string, parkedGateIDs map[string]bool) *primeGateIssue {
 	for i := range gates {
 		gate := &gates[i]
-		if gate.Status != string(beads.StatusClosed) || !gateHasWaiter(*gate, aliases) {
+		if gate.Status != string(beads.StatusClosed) || !gateMatchesParkedWork(*gate, aliases, parkedGateIDs) {
 			continue
 		}
 		return gate
 	}
 	return nil
+}
+
+func gateMatchesParkedWork(gate primeGateIssue, aliases []string, parkedGateIDs map[string]bool) bool {
+	if len(parkedGateIDs) > 0 && parkedGateIDs[gate.ID] {
+		return true
+	}
+	return gateHasWaiter(gate, aliases)
 }
 
 func gateHasWaiter(gate primeGateIssue, aliases []string) bool {

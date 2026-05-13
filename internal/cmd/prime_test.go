@@ -944,7 +944,7 @@ func TestFindClearedGateForWaiter(t *testing.T) {
 		{ID: "gt-gate-closed", Status: "closed", Waiters: []string{"gastown/polecats/enclave"}},
 	}
 
-	gate := findClearedGateForWaiter(gates, []string{"gastown/polecats/enclave"})
+	gate := findClearedGateForWaiter(gates, []string{"gastown/polecats/enclave"}, nil)
 	if gate == nil {
 		t.Fatal("findClearedGateForWaiter() = nil, want matching closed gate")
 	}
@@ -958,8 +958,33 @@ func TestFindClearedGateForWaiter_IgnoresOpenGate(t *testing.T) {
 		{ID: "gt-gate-open", Status: "open", Waiters: []string{"gastown/polecats/enclave"}},
 	}
 
-	if gate := findClearedGateForWaiter(gates, []string{"gastown/polecats/enclave"}); gate != nil {
+	if gate := findClearedGateForWaiter(gates, []string{"gastown/polecats/enclave"}, nil); gate != nil {
 		t.Fatalf("findClearedGateForWaiter() = %s, want nil", gate.ID)
+	}
+}
+
+func TestFindClearedGateForWaiter_MatchesParkedGateID(t *testing.T) {
+	gates := []primeGateIssue{
+		{ID: "gt-gate-closed", Status: "closed"},
+	}
+
+	gate := findClearedGateForWaiter(gates, []string{"gastown/polecats/enclave"}, map[string]bool{"gt-gate-closed": true})
+	if gate == nil {
+		t.Fatal("findClearedGateForWaiter() = nil, want parked gate ID match")
+	}
+	if gate.ID != "gt-gate-closed" {
+		t.Fatalf("findClearedGateForWaiter() = %s, want gt-gate-closed", gate.ID)
+	}
+}
+
+func TestCollectGateIDsFromParkedJSON(t *testing.T) {
+	gateIDs := make(map[string]bool)
+	collectGateIDsFromParkedJSON([]byte(`{"gate_id":"gt-gate-1","nested":{"gate":"gt-gate-2"}}`), gateIDs)
+
+	for _, want := range []string{"gt-gate-1", "gt-gate-2"} {
+		if !gateIDs[want] {
+			t.Fatalf("collectGateIDsFromParkedJSON() missing %q in %v", want, gateIDs)
+		}
 	}
 }
 
