@@ -915,6 +915,63 @@ func TestCheckSlungWork_StandaloneFormulaUsesWorkflowOutput(t *testing.T) {
 	}
 }
 
+func TestGateWaiterAliases_Polecat(t *testing.T) {
+	ctx := RoleContext{Role: RolePolecat, Rig: "gastown", Polecat: "enclave"}
+
+	aliases := gateWaiterAliases(ctx)
+	for _, want := range []string{
+		"gastown/polecats/enclave",
+		"gastown/polecat/enclave",
+		"enclave",
+	} {
+		found := false
+		for _, got := range aliases {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("gateWaiterAliases() missing %q in %v", want, aliases)
+		}
+	}
+}
+
+func TestFindClearedGateForWaiter(t *testing.T) {
+	gates := []primeGateIssue{
+		{ID: "gt-gate-open", Status: "open", Waiters: []string{"gastown/polecats/enclave"}},
+		{ID: "gt-gate-other", Status: "closed", Waiters: []string{"gastown/polecats/other"}},
+		{ID: "gt-gate-closed", Status: "closed", Waiters: []string{"gastown/polecats/enclave"}},
+	}
+
+	gate := findClearedGateForWaiter(gates, []string{"gastown/polecats/enclave"})
+	if gate == nil {
+		t.Fatal("findClearedGateForWaiter() = nil, want matching closed gate")
+	}
+	if gate.ID != "gt-gate-closed" {
+		t.Fatalf("findClearedGateForWaiter() = %s, want gt-gate-closed", gate.ID)
+	}
+}
+
+func TestFindClearedGateForWaiter_IgnoresOpenGate(t *testing.T) {
+	gates := []primeGateIssue{
+		{ID: "gt-gate-open", Status: "open", Waiters: []string{"gastown/polecats/enclave"}},
+	}
+
+	if gate := findClearedGateForWaiter(gates, []string{"gastown/polecats/enclave"}); gate != nil {
+		t.Fatalf("findClearedGateForWaiter() = %s, want nil", gate.ID)
+	}
+}
+
+func TestStripPrimeBDWarnings(t *testing.T) {
+	input := []byte("warning: redirect chains not allowed\n[{\"id\":\"gt-gate\"}]\n")
+	got := string(stripPrimeBDWarnings(input))
+	want := `[{"id":"gt-gate"}]`
+	if got != want {
+		t.Fatalf("stripPrimeBDWarnings() = %q, want %q", got, want)
+	}
+}
+
 // TestCompactResumeReminder_PolecatGetsGtDone verifies that polecats get a
 // gt done reminder after context compaction. This is the regression test for
 // the polecats-no-gt-done bug: after long work sessions, compaction drops the

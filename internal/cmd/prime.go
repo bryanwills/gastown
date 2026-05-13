@@ -214,6 +214,11 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 
 	hasSlungWork := checkSlungWork(ctx, hookedBead)
 	explain(hasSlungWork, "Autonomous mode: hooked/in-progress work detected")
+	hasParkedWork := false
+	if !hasSlungWork {
+		hasParkedWork = checkParkedWork(ctx)
+		explain(hasParkedWork, "Gate recovery: parked work has a cleared gate")
+	}
 
 	outputMoleculeContext(ctx)
 	outputCheckpointContext(ctx)
@@ -223,7 +228,7 @@ func runPrime(cmd *cobra.Command, args []string) (retErr error) {
 		checkPendingEscalations(ctx)
 	}
 
-	if !hasSlungWork {
+	if !hasSlungWork && !hasParkedWork {
 		explain(true, "Startup directive: normal mode (no hooked work)")
 		outputStartupDirective(ctx)
 	}
@@ -553,7 +558,7 @@ var memoryTypeLabels = map[string]string{
 	"feedback":  "Behavioral Rules (from user feedback)",
 	"user":      "User Context",
 	"project":   "Project Context",
-	"reference":  "Reference Links",
+	"reference": "Reference Links",
 	"general":   "General",
 }
 
@@ -663,6 +668,176 @@ func checkSlungWork(ctx RoleContext, hookedBead *beads.Issue) bool {
 
 func hasWorkflowAttachment(attachment *beads.AttachmentFields) bool {
 	return attachment != nil && (attachment.AttachedMolecule != "" || attachment.AttachedFormula != "")
+}
+
+type primeGateIssue struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Status      string   `json:"status"`
+	IssueType   string   `json:"issue_type"`
+	AwaitType   string   `json:"await_type"`
+	AwaitID     string   `json:"await_id"`
+	Waiters     []string `json:"waiters"`
+	Blocks      []string `json:"blocks"`
+	ClosedAt    string   `json:"closed_at"`
+	Description string   `json:"description"`
+}
+
+// checkParkedWork detects gate-waiting work whose gate was already resolved.
+// This closes the recovery gap where bd gate check closes a gate but the Deacon
+// dies before sending a wake: the next gt prime tells the waiter to resume.
+func checkParkedWork(ctx RoleContext) bool {
+	aliases := gateWaiterAliases(ctx)
+	if len(aliases) == 0 || !agentMayHaveParkedWork(ctx) {
+		return false
+	}
+
+	gates, err := listPrimeGates(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gt prime gate recovery: %v\n", err)
+		return false
+	}
+
+	gate := findClearedGateForWaiter(gates, aliases)
+	if gate == nil {
+		return false
+	}
+
+	outputGateResumeDirective(ctx, *gate)
+	return true
+}
+
+func gateWaiterAliases(ctx RoleContext) []string {
+	seen := make(map[string]bool)
+	var aliases []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		aliases = append(aliases, value)
+	}
+
+	add(getAgentIdentity(ctx))
+	add(ctx.ActorString())
+	if ctx.Rig != "" && ctx.Polecat != "" {
+		switch ctx.Role {
+		case RolePolecat:
+			add(fmt.Sprintf("%s/polecat/%s", ctx.Rig, ctx.Polecat))
+			add(ctx.Polecat)
+		case RoleCrew:
+			add(fmt.Sprintf("%s/worker/%s", ctx.Rig, ctx.Polecat))
+			add(ctx.Polecat)
+		}
+	}
+
+	return aliases
+}
+
+func agentMayHaveParkedWork(ctx RoleContext) bool {
+	agentBeadID := getAgentBeadID(ctx)
+	if agentBeadID == "" {
+		return true
+	}
+
+	ab := beads.New(beads.ResolveHookDir(ctx.TownRoot, agentBeadID, ctx.WorkDir))
+	agentBead, err := ab.Show(agentBeadID)
+	if err != nil || agentBead == nil {
+		// Older parked-work paths persisted only the gate waiter. Do not make a
+		// missing agent bead suppress recovery from a closed gate.
+		return true
+	}
+
+	state := beads.ResolveAgentState(agentBead.Description, agentBead.AgentState)
+	return state == "" || state == string(beads.AgentStateAwaitingGate)
+}
+
+func listPrimeGates(ctx RoleContext) ([]primeGateIssue, error) {
+	cmd := exec.Command("bd", "gate", "list", "--all", "--limit=0", "--json")
+	cmd.Dir = rigBeadsRoot(ctx)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		if errMsg := strings.TrimSpace(stderr.String()); errMsg != "" {
+			return nil, fmt.Errorf("bd gate list: %s", errMsg)
+		}
+		return nil, fmt.Errorf("bd gate list: %w", err)
+	}
+
+	out := stripPrimeBDWarnings(stdout.Bytes())
+	if len(out) == 0 || bytes.Equal(out, []byte("null")) {
+		return nil, nil
+	}
+	if !json.Valid(out) {
+		return nil, fmt.Errorf("bd gate list returned non-JSON output: %s", strings.TrimSpace(string(out)))
+	}
+
+	var gates []primeGateIssue
+	if err := json.Unmarshal(out, &gates); err != nil {
+		return nil, fmt.Errorf("parsing bd gate list output: %w", err)
+	}
+	return gates, nil
+}
+
+func stripPrimeBDWarnings(data []byte) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	var cleaned [][]byte
+	for _, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("warning:")) || bytes.HasPrefix(trimmed, []byte("Warning:")) {
+			continue
+		}
+		if len(trimmed) == 0 {
+			continue
+		}
+		cleaned = append(cleaned, trimmed)
+	}
+	return bytes.Join(cleaned, []byte("\n"))
+}
+
+func findClearedGateForWaiter(gates []primeGateIssue, aliases []string) *primeGateIssue {
+	for i := range gates {
+		gate := &gates[i]
+		if gate.Status != string(beads.StatusClosed) || !gateHasWaiter(*gate, aliases) {
+			continue
+		}
+		return gate
+	}
+	return nil
+}
+
+func gateHasWaiter(gate primeGateIssue, aliases []string) bool {
+	for _, waiter := range gate.Waiters {
+		for _, alias := range aliases {
+			if waiter == alias {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func outputGateResumeDirective(ctx RoleContext, gate primeGateIssue) {
+	fmt.Println()
+	fmt.Printf("%s\n\n", style.Bold.Render("## 🚦 GATE CLEARED - RESUME PARKED WORK"))
+	fmt.Printf("Gate %s is closed", style.Bold.Render(gate.ID))
+	if gate.Title != "" {
+		fmt.Printf(" (%s)", gate.Title)
+	}
+	fmt.Println(".")
+	fmt.Printf("You are registered as a waiter for this gate as %s.\n", style.Bold.Render(getAgentIdentity(ctx)))
+	fmt.Println()
+	fmt.Println("Resume the work that was parked on this gate now. Do NOT wait for gate wake mail.")
+	if len(gate.Blocks) > 0 {
+		fmt.Printf("Unblocked work: %s\n", strings.Join(gate.Blocks, ", "))
+	}
+	fmt.Println("Useful commands:")
+	fmt.Println("- `bd mol current` to inspect the current workflow step")
+	fmt.Println("- `gt resume` to check for any handoff context")
+	fmt.Println()
 }
 
 // findAgentWork looks up hooked or in-progress beads assigned to this agent.
