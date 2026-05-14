@@ -4,6 +4,7 @@ package runtime
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -44,6 +45,11 @@ func EnsureSettingsForRole(settingsDir, workDir, role string, rc *config.Runtime
 	if err := hooks.InstallForRole(provider, settingsDir, workDir, role, rc.Hooks.Dir, rc.Hooks.SettingsFile, useSettingsDir); err != nil {
 		return err
 	}
+	if provider == "gemini" {
+		if err := ensureGeminiContextFile(workDir); err != nil {
+			return err
+		}
+	}
 
 	// 2. Slash commands (agent-agnostic, uses shared body with provider-specific frontmatter)
 	// Only provision for known agents to maintain backwards compatibility
@@ -53,6 +59,50 @@ func EnsureSettingsForRole(settingsDir, workDir, role string, rc *config.Runtime
 		}
 	}
 
+	return nil
+}
+
+func ensureGeminiContextFile(workDir string) error {
+	if workDir == "" {
+		return nil
+	}
+
+	if _, err := os.Stat(filepath.Join(workDir, "AGENTS.md")); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking AGENTS.md: %w", err)
+	}
+
+	geminiPath := filepath.Join(workDir, "GEMINI.md")
+	info, err := os.Lstat(geminiPath)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+
+		target, err := os.Readlink(geminiPath)
+		if err != nil {
+			return fmt.Errorf("reading GEMINI.md symlink: %w", err)
+		}
+		if target == "AGENTS.md" {
+			return nil
+		}
+		if _, err := os.Stat(geminiPath); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("checking GEMINI.md symlink target: %w", err)
+		}
+		if err := os.Remove(geminiPath); err != nil {
+			return fmt.Errorf("removing broken GEMINI.md symlink: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking GEMINI.md: %w", err)
+	}
+
+	if err := os.Symlink("AGENTS.md", geminiPath); err != nil {
+		return fmt.Errorf("creating GEMINI.md symlink: %w", err)
+	}
 	return nil
 }
 

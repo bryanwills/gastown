@@ -612,6 +612,9 @@ func TestEnsureSettingsForRole_GeminiUsesWorkDir(t *testing.T) {
 	// Gemini CLI has no --settings flag; settings must go to workDir (like OpenCode).
 	settingsDir := t.TempDir()
 	workDir := t.TempDir()
+	if err := os.WriteFile(workDir+"/AGENTS.md", []byte("# Agents\n"), 0644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
 
 	rc := &config.RuntimeConfig{
 		Hooks: &config.RuntimeHooksConfig{
@@ -632,6 +635,44 @@ func TestEnsureSettingsForRole_GeminiUsesWorkDir(t *testing.T) {
 	}
 	if _, err := os.Stat(workDir + "/.gemini/settings.json"); err != nil {
 		t.Error("Gemini settings should be in workDir")
+	}
+	target, err := os.Readlink(workDir + "/GEMINI.md")
+	if err != nil {
+		t.Fatalf("Gemini context symlink should exist in workDir: %v", err)
+	}
+	if target != "AGENTS.md" {
+		t.Errorf("GEMINI.md target = %q, want AGENTS.md", target)
+	}
+}
+
+func TestEnsureSettingsForRole_GeminiRepairsBrokenContextSymlink(t *testing.T) {
+	settingsDir := t.TempDir()
+	workDir := t.TempDir()
+	if err := os.WriteFile(workDir+"/AGENTS.md", []byte("# Agents\n"), 0644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	if err := os.Symlink("./rig/worktree/AGENTS.md", workDir+"/GEMINI.md"); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	rc := &config.RuntimeConfig{
+		Hooks: &config.RuntimeHooksConfig{
+			Provider:     "gemini",
+			Dir:          ".gemini",
+			SettingsFile: "settings.json",
+		},
+	}
+
+	if err := EnsureSettingsForRole(settingsDir, workDir, "witness", rc); err != nil {
+		t.Fatalf("EnsureSettingsForRole() error = %v", err)
+	}
+
+	target, err := os.Readlink(workDir + "/GEMINI.md")
+	if err != nil {
+		t.Fatalf("read repaired GEMINI.md symlink: %v", err)
+	}
+	if target != "AGENTS.md" {
+		t.Errorf("GEMINI.md target = %q, want AGENTS.md", target)
 	}
 }
 
