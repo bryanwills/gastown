@@ -88,11 +88,14 @@ func ensureConfigYAML(beadsDir, prefix string, onlyIfMissing bool) error {
 	wantIssuePrefix := "issue-prefix: " + prefix
 	// Gas Town rigs should disable idle-monitor to use centralized Dolt server
 	wantIdleTimeout := "dolt.idle-timeout: \"0\""
+	// Gas Town stores beads in Dolt/server-mode runtime directories that are often
+	// redirected or gitignored; bd's post-run auto-export git-add is noisy there.
+	wantExportAuto := "export.auto: \"false\""
 
 	data, err := os.ReadFile(configPath)
 	if os.IsNotExist(err) {
 		// New config: include all Gas Town defaults
-		content := wantPrefix + "\n" + wantIssuePrefix + "\n" + wantIdleTimeout + "\n"
+		content := wantPrefix + "\n" + wantIssuePrefix + "\n" + wantIdleTimeout + "\n" + wantExportAuto + "\n"
 		return os.WriteFile(configPath, []byte(content), 0644)
 	}
 	if err != nil {
@@ -107,6 +110,7 @@ func ensureConfigYAML(beadsDir, prefix string, onlyIfMissing bool) error {
 	foundPrefix := false
 	foundIssuePrefix := false
 	foundIdleTimeout := false
+	foundExportAuto := false
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -125,6 +129,11 @@ func ensureConfigYAML(beadsDir, prefix string, onlyIfMissing bool) error {
 			foundIdleTimeout = true
 			continue
 		}
+		if strings.HasPrefix(trimmed, "export.auto:") {
+			lines[i] = wantExportAuto
+			foundExportAuto = true
+			continue
+		}
 	}
 
 	if !foundPrefix {
@@ -135,6 +144,9 @@ func ensureConfigYAML(beadsDir, prefix string, onlyIfMissing bool) error {
 	}
 	if !foundIdleTimeout {
 		lines = append(lines, wantIdleTimeout)
+	}
+	if !foundExportAuto {
+		lines = append(lines, wantExportAuto)
 	}
 
 	newContent := strings.Join(lines, "\n")
