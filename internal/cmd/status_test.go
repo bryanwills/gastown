@@ -207,6 +207,32 @@ func TestOutputStatusText_IncludesDNDSection(t *testing.T) {
 	}
 }
 
+func TestStatusFastMode_JSONImpliesFast(t *testing.T) {
+	oldJSON := statusJSON
+	oldFast := statusFast
+	defer func() {
+		statusJSON = oldJSON
+		statusFast = oldFast
+	}()
+
+	statusJSON = true
+	statusFast = false
+	if !statusFastMode() {
+		t.Fatal("JSON status should use fast mode")
+	}
+
+	statusJSON = false
+	statusFast = false
+	if statusFastMode() {
+		t.Fatal("text status should not use fast mode by default")
+	}
+
+	statusFast = true
+	if !statusFastMode() {
+		t.Fatal("--fast should use fast mode")
+	}
+}
+
 func TestRunStatusWatch_RejectsZeroInterval(t *testing.T) {
 	oldInterval := statusInterval
 	oldWatch := statusWatch

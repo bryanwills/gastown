@@ -611,7 +611,7 @@ func gatherStatus() (TownStatus, error) {
 		return TownStatus{}, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	fast := statusFast
+	fast := statusFastMode()
 	skipBeadsPrefetch := false
 	if !fast {
 		if release, ok := tryStatusDetailLock(townRoot); ok {
@@ -980,6 +980,13 @@ func gatherStatus() (TownStatus, error) {
 	status.Summary.RigCount = len(rigs)
 
 	return status, nil
+}
+
+func statusFastMode() bool {
+	// JSON status is primarily consumed by automation and smoke checks. Keep it
+	// runtime-only so repeated machine reads do not amplify Dolt-backed detail
+	// lookups under load; interactive text status still defaults to full detail.
+	return statusFast || statusJSON
 }
 
 func outputStatusJSON(status TownStatus) error {
