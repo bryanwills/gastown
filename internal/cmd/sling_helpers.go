@@ -325,9 +325,9 @@ func verifyBeadExistsInTargetRigDatabase(beadID, targetRig, townRoot string) err
 	}
 	targetBeadsDir := filepath.Join(targetRigDir, ".beads")
 
-	out, err := BdCmd("--db", targetBeadsDir, "show", beadID, "--json", "--allow-stale").
+	out, err := BdCmd("show", beadID, "--json", "--allow-stale").
 		Dir(targetRigDir).
-		StripBeadsDir().
+		WithBeadsDir(targetBeadsDir).
 		Stderr(io.Discard).
 		Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
