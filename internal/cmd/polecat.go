@@ -1042,8 +1042,9 @@ type RecoveryStatus struct {
 	Issue         string                `json:"issue,omitempty"`
 	MQStatus      string                `json:"mq_status,omitempty"` // "submitted", "not_submitted", "not_required", "unknown"
 	ActiveMR      string                `json:"active_mr,omitempty"`
-	Blockers      []string              `json:"blockers,omitempty"`
-	Diagnostics   []string              `json:"diagnostics,omitempty"`
+	Reusable      bool                  `json:"reusable"`
+	SafeToNuke    bool                  `json:"safe_to_nuke"`
+	Reason        string                `json:"reason,omitempty"`
 }
 
 func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
@@ -1052,126 +1053,30 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	mgr, r, err := getPolecatManager(rigName)
+	mgr, _, err := getPolecatManager(rigName)
 	if err != nil {
 		return err
 	}
 
-	// Verify polecat exists and get info
-	p, err := mgr.Get(polecatName)
+	// Verify polecat exists and get shared recovery/reuse verdict.
+	workState, err := mgr.EvaluateWorkState(polecatName)
 	if err != nil {
 		return fmt.Errorf("polecat '%s' not found in rig '%s'", polecatName, rigName)
 	}
 
-	// Get cleanup_status from agent bead
-	// We need to read it directly from beads since manager doesn't expose it
-	rigPath := r.Path
-	bd := beads.New(rigPath)
-	agentBeadID := polecatBeadIDForRig(r, rigName, polecatName)
-	agentIssue, fields, err := bd.GetAgentBead(agentBeadID)
-
 	status := RecoveryStatus{
-		Rig:     rigName,
-		Polecat: polecatName,
-		Branch:  p.Branch,
-		Issue:   p.Issue,
-	}
-	beadTerminal := isAssignedBeadTerminal(bd, status.Issue)
-
-	if err != nil || fields == nil {
-		// No agent bead or no cleanup_status - fall back to git check
-		// This handles polecats that haven't self-reported yet
-		gitState, gitErr := getGitState(p.ClonePath)
-		if gitErr != nil {
-			status.CleanupStatus = polecat.CleanupUnknown
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-			status.Blockers = append(status.Blockers, fmt.Sprintf("git_state=unknown path=%s: %v", p.ClonePath, gitErr))
-		} else if gitState.Clean {
-			status.CleanupStatus = polecat.CleanupClean
-			status.NeedsRecovery = false
-			status.Verdict = "SAFE_TO_NUKE"
-		} else if gitState.UnpushedCommits > 0 {
-			status.CleanupStatus = polecat.CleanupUnpushed
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-			status.Blockers = append(status.Blockers, fmt.Sprintf("git_state=has_unpushed unpushed_commits=%d", gitState.UnpushedCommits))
-		} else if gitState.StashCount > 0 {
-			status.CleanupStatus = polecat.CleanupStash
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-			status.Blockers = append(status.Blockers, fmt.Sprintf("git_state=has_stash stash_count=%d", gitState.StashCount))
-		} else {
-			status.CleanupStatus = polecat.CleanupUncommitted
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-			status.Blockers = append(status.Blockers, fmt.Sprintf("git_state=has_uncommitted uncommitted_files=%d", len(gitState.UncommittedFiles)))
-		}
-	} else {
-		// Use cleanup_status from agent bead
-		status.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
-		status.ActiveMR = fields.ActiveMR
-		hookBead := agentHookBead(agentIssue, fields)
-		var gitState *GitState
-		var gitErr error
-		gitStateLoaded := false
-		loadGitState := func() {
-			if gitStateLoaded {
-				return
-			}
-			gitState, gitErr = getGitState(p.ClonePath)
-			gitStateLoaded = true
-		}
-		assignee := fmt.Sprintf("%s/polecats/%s", rigName, polecatName)
-		partialSpawn, diagnostic := partialSpawnWithoutDurableHook(bd, fields, assignee, status.Issue)
-		if diagnostic != "" {
-			status.Diagnostics = append(status.Diagnostics, diagnostic)
-		}
-		if blocker := cleanupStatusBlockerForRecovery(status.CleanupStatus, partialSpawn); blocker != "" {
-			if status.CleanupStatus == polecat.CleanupUnpushed {
-				loadGitState()
-			}
-			if staleCleanupStatusCanBeIgnoredForRecovery(status.CleanupStatus, beadTerminal, hookBead, fields.ActiveMR, gitState, gitErr) {
-				status.Diagnostics = append(status.Diagnostics, fmt.Sprintf("ignored_stale_cleanup_status=%s direct_git_state=clean assigned_bead=terminal", status.CleanupStatus))
-			} else {
-				status.Blockers = append(status.Blockers, blocker)
-			}
-		}
-		if status.CleanupStatus == "" || status.CleanupStatus == polecat.CleanupUnknown {
-			loadGitState()
-			if blocker := recoveryGitStateBlocker(p.ClonePath, gitState, gitErr); blocker != "" {
-				status.Blockers = append(status.Blockers, blocker)
-			}
-		}
-		if blocker := activeMRBlocker(bd, fields.ActiveMR); blocker != "" {
-			status.Blockers = append(status.Blockers, blocker)
-		}
-		if len(status.Blockers) == 0 {
-			status.NeedsRecovery = false
-			status.Verdict = "SAFE_TO_NUKE"
-		} else {
-			// RequiresRecovery covers uncommitted, stash, unpushed
-			// Unknown/empty also treated conservatively
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-		}
-	}
-
-	// MQ check: if verdict is SAFE_TO_NUKE and polecat has a branch,
-	// verify the work was actually submitted to the merge queue.
-	// Without this check, polecats that crashed between push and MQ submission
-	// would be nuked with orphaned branches on the remote. See #1035.
-	//
-	// Exception: if the polecat's assigned bead is already CLOSED/TOMBSTONE,
-	// the work is terminal and MQ submission is moot. Reporting NEEDS_MQ_SUBMIT
-	// on a closed bead triggered a zombie-restart loop (see aa-55d8): witness
-	// patrols kept auto-restarting the polecat to "finish" work that was already
-	// done, which just ran `gt done` again and died, over and over.
-	if status.Verdict == "SAFE_TO_NUKE" && status.Branch != "" {
-		mqBd := beads.New(r.Path)
-		gitState, gitErr := getGitState(p.ClonePath)
-		hasSubmittableWork := hasSubmittableWorkForRecovery(p.ClonePath, gitState, gitErr)
-		applyMQCheck(&status, mqBd, beadTerminal, hasSubmittableWork)
+		Rig:           rigName,
+		Polecat:       polecatName,
+		Branch:        workState.Branch,
+		Issue:         workState.Issue,
+		CleanupStatus: workState.CleanupStatus,
+		NeedsRecovery: workState.NeedsRecovery,
+		Verdict:       workState.Verdict,
+		MQStatus:      workState.MQStatus,
+		ActiveMR:      workState.ActiveMR,
+		Reusable:      workState.Reusable,
+		SafeToNuke:    workState.SafeToNuke,
+		Reason:        workState.Reason,
 	}
 
 	// JSON output
@@ -1193,9 +1098,6 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 	if status.ActiveMR != "" {
 		fmt.Printf("  Active MR:       %s\n", status.ActiveMR)
 	}
-	if len(status.Diagnostics) > 0 {
-		fmt.Printf("  Diagnostics:     %s\n", strings.Join(status.Diagnostics, "; "))
-	}
 	fmt.Println()
 
 	switch status.Verdict {
@@ -1207,16 +1109,22 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 		fmt.Println("  Submit to MQ before cleanup, or the branch will be orphaned.")
 	case "NEEDS_RECOVERY":
 		fmt.Printf("  Verdict:         %s\n", style.Error.Render("NEEDS_RECOVERY"))
-		fmt.Println()
-		if len(status.Blockers) > 0 {
-			fmt.Printf("  %s Cleanup refused by these predicate(s):\n", style.Warning.Render("⚠"))
-			for _, blocker := range status.Blockers {
-				fmt.Printf("    - %s\n", blocker)
-			}
-		} else {
-			fmt.Printf("  %s Cleanup refused by an unknown recovery predicate.\n", style.Warning.Render("⚠"))
+		if status.MQStatus != "" {
+			fmt.Printf("  MQ Status:       %s\n", status.MQStatus)
 		}
-		fmt.Println("  Escalate to Mayor for recovery before cleanup.")
+		if status.ActiveMR != "" {
+			fmt.Printf("  Active MR:       %s\n", status.ActiveMR)
+		}
+		if status.Reason != "" {
+			fmt.Printf("  Reason:          %s\n", status.Reason)
+		}
+		fmt.Println()
+		if status.Reusable {
+			fmt.Printf("  %s Work is preserved/submitted; the slot may be reusable, but cleanup/nuke is blocked until recovery is reconciled.\n", style.Warning.Render("⚠"))
+		} else {
+			fmt.Printf("  %s This polecat is not safe for cleanup/reuse.\n", style.Warning.Render("⚠"))
+			fmt.Println("  Escalate to Mayor for recovery before cleanup or reuse.")
+		}
 	default:
 		fmt.Printf("  Verdict:         %s\n", style.Success.Render("SAFE_TO_NUKE"))
 		if status.MQStatus != "" {
@@ -1228,206 +1136,6 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 
 	return nil
 }
-
-type issueShower interface {
-	Show(issueID string) (*beads.Issue, error)
-}
-
-func cleanupStatusBlocker(status polecat.CleanupStatus) string {
-	switch status {
-	case polecat.CleanupClean:
-		return ""
-	case "":
-		return "cleanup_status=<missing>"
-	case polecat.CleanupUnknown:
-		return "cleanup_status=unknown"
-	default:
-		return fmt.Sprintf("cleanup_status=%s", status)
-	}
-}
-
-func cleanupStatusBlockerForRecovery(status polecat.CleanupStatus, partialSpawnWithoutHook bool) string {
-	if partialSpawnWithoutHook && (status == "" || status == polecat.CleanupUnknown) {
-		return ""
-	}
-	return cleanupStatusBlocker(status)
-}
-
-func agentHookBead(agentIssue *beads.Issue, fields *beads.AgentFields) string {
-	if agentIssue != nil && agentIssue.HookBead != "" {
-		return agentIssue.HookBead
-	}
-	if fields != nil {
-		return fields.HookBead
-	}
-	return ""
-}
-
-func staleCleanupStatusCanBeIgnoredForRecovery(status polecat.CleanupStatus, beadTerminal bool, hookBead, activeMR string, gitState *GitState, gitErr error) bool {
-	return status == polecat.CleanupUnpushed &&
-		beadTerminal &&
-		hookBead == "" &&
-		activeMR == "" &&
-		gitErr == nil &&
-		gitState != nil &&
-		gitState.Clean
-}
-
-func partialSpawnWithoutDurableHook(bd issueShower, fields *beads.AgentFields, assignee, currentIssue string) (bool, string) {
-	if bd == nil || fields == nil || fields.AgentState != "spawning" || fields.HookBead == "" || currentIssue != "" {
-		return false, ""
-	}
-	issue, err := bd.Show(fields.HookBead)
-	if err != nil || issue == nil {
-		return false, ""
-	}
-	if (issue.Status == beads.StatusHooked && issue.Assignee == assignee) || issue.Assignee == assignee {
-		return false, ""
-	}
-	return true, fmt.Sprintf("partial_spawn_without_durable_hook agent_state=%s hook_bead=%s hook_status=%s hook_assignee=%q", fields.AgentState, fields.HookBead, issue.Status, issue.Assignee)
-}
-
-func recoveryGitStateBlocker(worktreePath string, gitState *GitState, gitErr error) string {
-	if gitErr != nil {
-		return fmt.Sprintf("git_state=unknown path=%s: %v", worktreePath, gitErr)
-	}
-	if gitState == nil || gitState.Clean {
-		return ""
-	}
-	if gitState.UnpushedCommits > 0 {
-		return fmt.Sprintf("git_state=has_unpushed unpushed_commits=%d", gitState.UnpushedCommits)
-	}
-	if gitState.StashCount > 0 {
-		return fmt.Sprintf("git_state=has_stash stash_count=%d", gitState.StashCount)
-	}
-	return fmt.Sprintf("git_state=has_uncommitted uncommitted_files=%d", len(gitState.UncommittedFiles))
-}
-
-func activeMRBlocker(bd issueShower, mrID string) string {
-	if mrID == "" {
-		return ""
-	}
-	if bd == nil {
-		return fmt.Sprintf("active_mr=%s status=unverified", mrID)
-	}
-	mr, err := bd.Show(mrID)
-	if err != nil {
-		if errors.Is(err, beads.ErrNotFound) {
-			return ""
-		}
-		return fmt.Sprintf("active_mr=%s status=lookup_error: %v", mrID, err)
-	}
-	if mr == nil {
-		return ""
-	}
-	if beads.IssueStatus(mr.Status).IsTerminal() {
-		return ""
-	}
-	return fmt.Sprintf("active_mr=%s status=%s", mrID, mr.Status)
-}
-
-func hasSubmittableWorkForRecovery(worktreePath string, gitState *GitState, gitErr error) bool {
-	if count, err := commitsAheadOfUpstream(worktreePath); err == nil {
-		return count > 0
-	}
-	return gitErr != nil || (gitState != nil && gitState.UnpushedCommits > 0)
-}
-
-func commitsAheadOfUpstream(worktreePath string) (int, error) {
-	branchCmd := exec.Command("git", "branch", "--show-current")
-	branchCmd.Dir = worktreePath
-	branchOut, err := branchCmd.Output()
-	if err != nil {
-		return 0, err
-	}
-	branch := strings.TrimSpace(string(branchOut))
-	if branch == "" {
-		return 0, fmt.Errorf("empty branch")
-	}
-
-	upstreamCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "@{u}")
-	upstreamCmd.Dir = worktreePath
-	upstreamOut, err := upstreamCmd.Output()
-	if err != nil {
-		return 0, err
-	}
-	upstream := strings.TrimSpace(string(upstreamOut))
-	if upstream == "" {
-		return 0, fmt.Errorf("empty upstream")
-	}
-	upstreamBranch := strings.TrimPrefix(upstream, "origin/")
-	if !isRecoveryBaseBranch(upstreamBranch) || (upstreamBranch == branch && !isRecoveryBaseBranch(branch)) {
-		return 0, fmt.Errorf("upstream %q is not a recovery base", upstream)
-	}
-
-	count, err := countPatchUniqueCommits(worktreePath, upstream)
-	if err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
-func isRecoveryBaseBranch(branch string) bool {
-	return branch == "main" || branch == "master" || strings.HasPrefix(branch, "integration/")
-}
-
-// mrFinder is the subset of *beads.Beads that applyMQCheck needs. It lets us
-// unit-test the verdict logic without a real bd binary.
-type mrFinder interface {
-	FindMRForBranchAny(branch string) (*beads.Issue, error)
-}
-
-// isAssignedBeadTerminal reports whether the polecat's assigned bead (if any)
-// is in a terminal status (closed/tombstone). Returns false on any lookup
-// failure — callers must only use this to *skip* further escalation, never to
-// escalate, so a false negative is safe.
-func isAssignedBeadTerminal(bd *beads.Beads, issueID string) bool {
-	if issueID == "" || bd == nil {
-		return false
-	}
-	issue, err := bd.Show(issueID)
-	if err != nil || issue == nil {
-		return false
-	}
-	return beads.IssueStatus(issue.Status).IsTerminal()
-}
-
-// applyMQCheck mutates status based on merge-queue state for the polecat's
-// branch. If beadTerminal is true, the assigned bead is already closed, so
-// there is nothing to submit and we leave the verdict as SAFE_TO_NUKE.
-//
-// This guard fixes the zombie-restart loop documented in bead aa-55d8:
-// a closed "no-op audit" bead (e.g. aa-xtee) used to report NEEDS_MQ_SUBMIT
-// forever, causing witness patrols to restart the polecat on every cycle.
-func applyMQCheck(status *RecoveryStatus, bd mrFinder, beadTerminal, hasSubmittableWork bool) {
-	if beadTerminal {
-		// Nothing to submit — the bead is already terminal.
-		status.MQStatus = "submitted"
-		return
-	}
-	if !hasSubmittableWork {
-		// No commits/content ahead of the integration branch means gt done had
-		// nothing to enqueue; treating that as missing MQ submission causes
-		// recovery loops on no-op/report-only assignments.
-		status.MQStatus = "not_required"
-		return
-	}
-	mr, mrErr := bd.FindMRForBranchAny(status.Branch)
-	if mrErr != nil {
-		// Can't verify MQ — be conservative
-		status.MQStatus = "unknown"
-		return
-	}
-	if mr != nil {
-		status.MQStatus = "submitted"
-		return
-	}
-	// Work was pushed but never entered the merge queue
-	status.MQStatus = "not_submitted"
-	status.NeedsRecovery = true
-	status.Verdict = "NEEDS_MQ_SUBMIT"
-}
-
 func runPolecatGC(cmd *cobra.Command, args []string) error {
 	rigName := args[0]
 
@@ -1633,6 +1341,9 @@ type nukePolecatOptions struct {
 
 func nukePolecatFullWithOptions(polecatName, rigName string, mgr *polecat.Manager, r *rig.Rig, opts nukePolecatOptions) error {
 	t := tmux.NewTmux()
+	if state, err := mgr.EvaluateWorkState(polecatName); err == nil && state.ActiveMR != "" && !state.SafeToNuke {
+		return fmt.Errorf("cannot nuke %s/%s: active MR %s is not terminal (verdict=%s, reason=%s)", rigName, polecatName, state.ActiveMR, state.Verdict, state.Reason)
+	}
 
 	// Step 1: Kill tmux session unconditionally to prevent ghost sessions
 	// when IsRunning fails to detect the session.
