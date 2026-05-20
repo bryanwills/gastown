@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -829,6 +830,98 @@ func TestResolveTargetRejectsLivePolecatMissingTargetRigDatabase(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestResolveTargetCreateSpawnsPolecatShorthandWhenPaneMissing(t *testing.T) {
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir mayor/rig: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	prevResolve := resolveTargetAgentFn
+	prevSpawn := spawnPolecatForSling
+	t.Cleanup(func() {
+		resolveTargetAgentFn = prevResolve
+		spawnPolecatForSling = prevSpawn
+	})
+	resolveTargetAgentFn = func(target string) (string, string, string, error) {
+		return "", "", "", errors.New("getting pane for gt-toast: exit status 1")
+	}
+
+	spawnCalled := false
+	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
+		spawnCalled = true
+		if rigName != "gastown" {
+			t.Fatalf("rigName = %q, want gastown", rigName)
+		}
+		if !opts.Create {
+			t.Fatal("expected Create option to be preserved")
+		}
+		return &SpawnedPolecatInfo{RigName: rigName, PolecatName: "toast", ClonePath: filepath.Join(townRoot, "fake-polecat")}, nil
+	}
+
+	got, err := resolveTarget("gastown/toast", ResolveTargetOptions{Create: true, NoBoot: true})
+	if err != nil {
+		t.Fatalf("resolveTarget: %v", err)
+	}
+	if !spawnCalled {
+		t.Fatal("expected spawnPolecatForSling to be called")
+	}
+	if got.Agent != "gastown/polecats/toast" {
+		t.Fatalf("Agent = %q, want gastown/polecats/toast", got.Agent)
+	}
+}
+
+func TestResolveTargetCreateDoesNotSpawnCrewShorthandWhenPaneMissing(t *testing.T) {
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor", "rig"), 0755); err != nil {
+		t.Fatalf("mkdir mayor/rig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(townRoot, "gastown", "crew", "toast"), 0755); err != nil {
+		t.Fatalf("mkdir crew: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	if err := os.Chdir(filepath.Join(townRoot, "mayor", "rig")); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	prevResolve := resolveTargetAgentFn
+	prevSpawn := spawnPolecatForSling
+	t.Cleanup(func() {
+		resolveTargetAgentFn = prevResolve
+		spawnPolecatForSling = prevSpawn
+	})
+	resolveTargetAgentFn = func(target string) (string, string, string, error) {
+		return "", "", "", errors.New("getting pane for gt-crew-toast: exit status 1")
+	}
+
+	spawnCalled := false
+	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
+		spawnCalled = true
+		return nil, errors.New("unexpected spawn")
+	}
+
+	_, err = resolveTarget("gastown/toast", ResolveTargetOptions{Create: true, NoBoot: true})
+	if err == nil {
+		t.Fatal("expected resolve error for missing crew pane")
+	}
+	if spawnCalled {
+		t.Fatal("crew shorthand must not spawn a polecat")
 	}
 }
 
