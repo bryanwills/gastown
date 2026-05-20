@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DOLT_VERSION: 1.83.0
+
 jobs:
   integration-full:
     name: Full Integration Tests
@@ -40,11 +43,11 @@ jobs:
 
       - name: Install Dolt
         run: |
-          curl -sL https://github.com/dolthub/dolt/releases/latest/download/dolt-linux-amd64.tar.gz | tar xz
+          curl -sL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" | tar xz
           mv dolt-linux-amd64/bin/dolt ~/go/bin/dolt
 
       - name: Pre-pull Dolt Docker image
-        run: docker pull dolthub/dolt-sql-server:1.83.0
+        run: docker pull "dolthub/dolt-sql-server:${DOLT_VERSION}"
 
       - name: Add to PATH
         run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"

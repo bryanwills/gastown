@@ -24,7 +24,9 @@ Dolt is a SQL database with Git-like version control. Install it for your platfo
 
 - **Linux:**
   ```bash
-  sudo bash -c 'curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash'
+  DOLT_VERSION=1.83.1
+  curl -sL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" | tar xz
+  sudo mv dolt-linux-amd64/bin/dolt /usr/local/bin/dolt
   ```
 - **macOS:**
   ```bash
@@ -59,7 +61,7 @@ This is the ten-step path from zero to your first claimed item on the Wasteland 
 
 **1. Install Dolt**
 
-Pick the one-liner for your platform and run it. Linux: `sudo bash -c 'curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash'`. macOS: `brew install dolt`. Confirm with `dolt version` — you need v1.83.1 or higher.
+Pick the install command for your platform and run it. Linux: install the pinned `v1.83.1` tarball shown above. macOS: `brew install dolt`. Confirm with `dolt version` — you need v1.83.1 or higher.
 
 **2. Create a DoltHub account and authenticate**
 
@@ -447,7 +449,9 @@ brew install dolt
 **Linux (amd64):**
 
 ```bash
-sudo bash -c 'curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash'
+DOLT_VERSION=1.83.1
+curl -sL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" | tar xz
+sudo mv dolt-linux-amd64/bin/dolt /usr/local/bin/dolt
 ```
 
 **Windows:**

@@ -3,6 +3,7 @@
 FROM docker/sandbox-templates:claude-code
 
 ARG GO_VERSION=1.25.8
+ARG DOLT_VERSION=1.83.0
 
 USER root
 
@@ -28,7 +29,15 @@ ENV PATH="/app/gastown:/usr/local/go/bin:/home/agent/go/bin:${PATH}"
 
 # Install beads (bd) and dolt
 RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
-RUN curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
+RUN ARCH=$(dpkg --print-architecture) && \
+    case "$ARCH" in \
+      amd64) DOLT_ARCH=amd64 ;; \
+      arm64) DOLT_ARCH=arm64 ;; \
+      *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-${DOLT_ARCH}.tar.gz" | tar -xz -C /tmp && \
+    mv "/tmp/dolt-linux-${DOLT_ARCH}/bin/dolt" /usr/local/bin/dolt && \
+    rm -rf "/tmp/dolt-linux-${DOLT_ARCH}"
 
 # Set up directories
 RUN mkdir -p /app /gt /gt/.dolt-data && chown -R agent:agent /app /gt
