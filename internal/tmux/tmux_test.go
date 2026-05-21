@@ -196,6 +196,7 @@ func TestWrapError(t *testing.T) {
 		{"duplicate session: test", ErrSessionExists},
 		{"session not found: test", ErrSessionNotFound},
 		{"can't find session: test", ErrSessionNotFound},
+		{"no such window: test", ErrSessionNotFound},
 	}
 
 	for _, tt := range tests {
