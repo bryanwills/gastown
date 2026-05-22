@@ -1143,10 +1143,11 @@ func hookBeadWithRetry(beadID, targetAgent, hookDir string) error {
 
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		err := BdCmd("update", beadID, "--status=hooked", "--assignee="+targetAgent).
-			Dir(hookDir).
-			WithAutoCommit().
-			Run()
+		_, err := beads.New(hookDir).TransitionSourceIssue(beads.SourceTransitionOptions{
+			Transition:    beads.SourceTransitionSlingAssign,
+			SourceIssueID: beadID,
+			Assignee:      targetAgent,
+		})
 		if err != nil {
 			lastErr = err
 			// Fail fast on config/init errors — retrying won't help (gt-2ra)

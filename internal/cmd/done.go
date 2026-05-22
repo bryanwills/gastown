@@ -741,7 +741,6 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), target)
 
-
 			sourceTransition = beads.SourceTransitionDirectDone
 			sourceTransitionReason = fmt.Sprintf("Direct merge to %s (convoy strategy)", target)
 
@@ -1015,7 +1014,6 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 				fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), target)
 
-
 				sourceTransition = beads.SourceTransitionDirectDone
 				sourceTransitionReason = fmt.Sprintf("Direct merge to %s (convoy strategy, late detection)", target)
 
@@ -1224,7 +1222,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			writeDoneCheckpoint(cpBd, agentBeadID, CheckpointMRCreated, mrID)
 		}
 
-		afterMR:
+	afterMR:
 		sourceTransition = beads.SourceTransitionDoneSubmittedMR
 		fmt.Printf("  Source: %s\n", branch)
 		fmt.Printf("  Target: %s\n", target)
@@ -1670,7 +1668,8 @@ func clearDoneCheckpoints(bd *beads.Beads, agentBeadID string) {
 // BUG FIX (hq-3xaxy): This function must be resilient to working directory deletion.
 // If the polecat's worktree is deleted before gt done finishes, we use env vars as fallback.
 // All errors are warnings, not failures - gt done must complete even if bead ops fail.
-func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string, completionFailed bool) {
+func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string, completionFailedOpt ...bool) {
+	completionFailed := len(completionFailedOpt) > 0 && completionFailedOpt[0]
 	// Get role context - try multiple sources for resilience
 	roleInfo, err := GetRoleWithContext(cwd, townRoot)
 	if err != nil {

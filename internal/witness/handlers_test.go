@@ -1702,8 +1702,8 @@ func TestProcessDiscoveredCompletion_NoMR(t *testing.T) {
 	}
 	discovery := &CompletionDiscovery{}
 	processDiscoveredCompletion(DefaultBdCli(), "/tmp", "testrig", payload, discovery)
-	if !strings.Contains(discovery.Action, "acknowledged-idle") {
-		t.Errorf("Action = %q, want to contain %q", discovery.Action, "acknowledged-idle")
+	if !strings.Contains(discovery.Action, "submission-failed-recovery-needed") {
+		t.Errorf("Action = %q, want to contain %q", discovery.Action, "submission-failed-recovery-needed")
 	}
 }
 
