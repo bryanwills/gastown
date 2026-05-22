@@ -2168,6 +2168,8 @@ func (m *Manager) reuseDecisionForPolecat(name string, state State) SlotReuseDec
 	}
 	if err == nil && fields != nil {
 		input.HookBead = fields.HookBead
+		input.ActiveMR = fields.ActiveMR
+		input.ActiveMRBlocks = fields.ActiveMR != ""
 		input.PushFailed = fields.PushFailed
 		input.MRFailed = fields.MRFailed
 		if fields.CleanupStatus != "" {

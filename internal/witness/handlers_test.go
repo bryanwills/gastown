@@ -2,6 +2,7 @@ package witness
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,6 +55,71 @@ func TestNotifyMayorSlotOpen_BlocksNonCompletedExit(t *testing.T) {
 	}
 	if event.Payload["reason"] != "exit-deferred" {
 		t.Fatalf("reason = %q, want exit-deferred", event.Payload["reason"])
+	}
+}
+
+func TestShouldNotifyMayorSlotOpenRequiresSafeRecovery(t *testing.T) {
+	prev := slotOpenRecoveryCheck
+	t.Cleanup(func() { slotOpenRecoveryCheck = prev })
+
+	tests := []struct {
+		name    string
+		output  string
+		err     error
+		wantOK  bool
+		wantMsg string
+	}{
+		{
+			name:   "safe to nuke notifies",
+			output: `{"verdict":"SAFE_TO_NUKE"}`,
+			wantOK: true,
+		},
+		{
+			name:   "slot-open disposition notifies",
+			output: `{"disposition":"submitted-preserved","slot_open_eligible":true,"verdict":"SUBMITTED_PRESERVED"}`,
+			wantOK: true,
+		},
+		{
+			name:   "warning-prefixed json notifies",
+			output: "warning: stale binary\n" + `{"verdict":"SAFE_TO_NUKE"}`,
+			wantOK: true,
+		},
+		{
+			name:    "blocked disposition suppresses",
+			output:  `{"disposition":"blocked-unknown","verdict":"NEEDS_RECOVERY","blockers":["git_state=unknown"]}`,
+			wantMsg: "blocked-unknown",
+		},
+		{
+			name:    "needs recovery suppresses",
+			output:  `{"verdict":"NEEDS_RECOVERY","blockers":["cleanup_status=has_unpushed"]}`,
+			wantMsg: "NEEDS_RECOVERY",
+		},
+		{
+			name:    "needs mq submit suppresses",
+			output:  `{"verdict":"NEEDS_MQ_SUBMIT"}`,
+			wantMsg: "NEEDS_MQ_SUBMIT",
+		},
+		{
+			name:    "check failure suppresses",
+			err:     errors.New("boom"),
+			wantMsg: "check-recovery failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			slotOpenRecoveryCheck = func(workDir, rigName, polecatName string) (string, error) {
+				return tt.output, tt.err
+			}
+
+			gotOK, gotMsg := shouldNotifyMayorSlotOpen("/tmp", "gastown", "nitro")
+			if gotOK != tt.wantOK {
+				t.Fatalf("ok = %v, want %v (msg=%q)", gotOK, tt.wantOK, gotMsg)
+			}
+			if tt.wantMsg != "" && !strings.Contains(gotMsg, tt.wantMsg) {
+				t.Fatalf("message %q does not contain %q", gotMsg, tt.wantMsg)
+			}
+		})
 	}
 }
 
