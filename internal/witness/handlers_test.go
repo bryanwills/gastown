@@ -2163,3 +2163,32 @@ func TestHandleZombieRestart_RestartsWhenBranchNotMerged(t *testing.T) {
 		t.Errorf("action = %q, should not archive when work is not merged", z.Action)
 	}
 }
+
+func TestActiveMRBlocksCleanup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		output string
+		err    error
+		want   bool
+	}{
+		{name: "empty active MR", want: false},
+		{name: "open MR blocks", output: `[{"status":"open"}]`, want: true},
+		{name: "closed MR clears", output: `[{"status":"closed"}]`, want: false},
+		{name: "missing MR clears", err: fmt.Errorf("issue not found"), want: false},
+		{name: "lookup error fails closed", err: fmt.Errorf("dolt unavailable"), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			bd, _ := mockBd(
+				func(args []string) (string, error) { return tt.output, tt.err },
+				func(args []string) error { return nil },
+			)
+			if got := activeMRBlocksCleanup(bd, t.TempDir(), "", "gt-mr"); got != tt.want {
+				t.Errorf("activeMRBlocksCleanup() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

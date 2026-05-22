@@ -794,6 +794,11 @@ func slotOpenDecision(workDir, townRoot, rigName, polecatName, exitType string) 
 		if fields.CleanupStatus != "" {
 			input.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
 		}
+		if fields.ActiveMR != "" {
+			if activeMRBlocksCleanup(DefaultBdCli(), workDir, agentID, fields.ActiveMR) {
+				input.ActiveMR = fields.ActiveMR
+			}
+		}
 	}
 	clonePath := filepath.Join(townRoot, rigName, "polecats", polecatName, rigName)
 	g := git.NewGit(clonePath)
@@ -815,6 +820,9 @@ func slotOpenDecision(workDir, townRoot, rigName, polecatName, exitType string) 
 		}
 	} else {
 		input.GitCheckFailed = true
+	}
+	if !input.GitCheckFailed && !input.GitDirty && input.StashCount == 0 && input.UnpushedCommits == 0 {
+		input.CleanupStatus = polecat.CleanupClean
 	}
 	return polecat.DecideSlotReuse(input)
 }
@@ -2976,7 +2984,7 @@ func hasPendingMR(bd *BdCli, workDir, _, polecatName, agentBeadID string) bool {
 
 	// Check 2: active_mr on agent bead (set by gt done when MR is created)
 	activeMR := getAgentActiveMR(bd, workDir, agentBeadID)
-	return activeMR != ""
+	return activeMRBlocksCleanup(bd, workDir, agentBeadID, activeMR)
 }
 
 // hasPendingMRFromSnapshot checks for a pending MR using a pre-fetched ActiveMR
@@ -2989,7 +2997,45 @@ func hasPendingMRFromSnapshot(bd *BdCli, workDir, polecatName, activeMR string) 
 	}
 
 	// Check 2: active_mr from pre-fetched snapshot
-	return activeMR != ""
+	return activeMRBlocksCleanup(bd, workDir, "", activeMR)
+}
+
+func activeMRBlocksCleanup(bd *BdCli, workDir, agentBeadID, activeMR string) bool {
+	if activeMR == "" {
+		return false
+	}
+	output, err := bd.Exec(workDir, "show", activeMR, "--json")
+	if err != nil {
+		if isBdNotFound(err) {
+			return clearStaleActiveMR(workDir, agentBeadID) != nil
+		}
+		return true
+	}
+	if output == "" || output == "[]" || output == "null" {
+		return clearStaleActiveMR(workDir, agentBeadID) != nil
+	}
+	var issues []struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(output), &issues); err != nil || len(issues) == 0 {
+		return true
+	}
+	if beads.IssueStatus(issues[0].Status).IsTerminal() {
+		return clearStaleActiveMR(workDir, agentBeadID) != nil
+	}
+	return true
+}
+
+func isBdNotFound(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found") || strings.Contains(msg, "no such")
+}
+
+func clearStaleActiveMR(workDir, agentBeadID string) error {
+	if agentBeadID == "" {
+		return nil
+	}
+	return beads.New(beads.ResolveBeadsDir(workDir)).ForAgentBead().UpdateAgentActiveMR(agentBeadID, "")
 }
 
 // getAgentActiveMR retrieves the active_mr field from a polecat's agent bead.

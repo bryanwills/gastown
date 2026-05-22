@@ -137,10 +137,10 @@ func TestIsActiveMRTerminal(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "missing active MR is not terminal",
+			name: "missing active MR is terminal",
 			mrID: "mr-1",
 			bd:   fakeIssueShower{issue: nil},
-			want: false,
+			want: true,
 		},
 		{
 			name: "reaped active MR is terminal",
@@ -160,6 +160,28 @@ func TestIsActiveMRTerminal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isActiveMRTerminal(tt.bd, tt.mrID); got != tt.want {
 				t.Errorf("isActiveMRTerminal() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanupStatusFromGitState(t *testing.T) {
+	tests := []struct {
+		name  string
+		state *GitState
+		want  string
+	}{
+		{name: "clean", state: &GitState{Clean: true}, want: "clean"},
+		{name: "unpushed", state: &GitState{UnpushedCommits: 1}, want: "has_unpushed"},
+		{name: "remote ahead reconcile", state: &GitState{NeedsReconcile: true}, want: "has_unpushed"},
+		{name: "stash", state: &GitState{StashCount: 1}, want: "has_stash"},
+		{name: "uncommitted", state: &GitState{UncommittedFiles: []string{"file.go"}}, want: "has_uncommitted"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(cleanupStatusFromGitState(tt.state)); got != tt.want {
+				t.Errorf("cleanupStatusFromGitState() = %q, want %q", got, tt.want)
 			}
 		})
 	}

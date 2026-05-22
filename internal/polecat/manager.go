@@ -456,6 +456,66 @@ func (m *Manager) checkCleanupStatus(name string, status CleanupStatus, force bo
 	}
 }
 
+func cleanupStatusFromGitStatus(status *git.UncommittedWorkStatus) CleanupStatus {
+	if status == nil {
+		return CleanupUnknown
+	}
+	if status.StashCount > 0 {
+		return CleanupStash
+	}
+	if status.UnpushedCommits > 0 {
+		return CleanupUnpushed
+	}
+	if status.HasUncommittedChanges {
+		return CleanupUncommitted
+	}
+	return CleanupClean
+}
+
+func (m *Manager) reconcileCleanupStatus(name string, persisted CleanupStatus) (CleanupStatus, error) {
+	status, err := git.NewGit(m.clonePath(name)).CheckUncommittedWork()
+	if err != nil {
+		return CleanupUnknown, fmt.Errorf("checking direct git evidence: %w", err)
+	}
+	direct := cleanupStatusFromGitStatus(status)
+	if persisted != CleanupUnknown && direct != persisted {
+		agentID := m.agentBeadID(name)
+		if updateErr := m.agentBeads().UpdateAgentCleanupStatus(agentID, string(direct)); updateErr != nil {
+			return direct, fmt.Errorf("reconciling stale cleanup_status %q to %q: %w", persisted, direct, updateErr)
+		}
+	}
+	return direct, nil
+}
+
+func (m *Manager) resolveAgentActiveMR(name, agentID string) (bool, string, error) {
+	_, fields, err := m.agentBeads().GetAgentBead(agentID)
+	if err != nil || fields == nil || fields.ActiveMR == "" {
+		return false, "", nil
+	}
+	pending, err := m.resolveActiveMR(name, agentID, fields.ActiveMR)
+	return pending, fields.ActiveMR, err
+}
+
+func (m *Manager) resolveActiveMR(name, agentID, activeMR string) (bool, error) {
+	mrBead, err := m.beads.Show(activeMR)
+	if errors.Is(err, beads.ErrNotFound) || (err == nil && mrBead == nil) {
+		if clearErr := m.agentBeads().UpdateAgentActiveMR(agentID, ""); clearErr != nil {
+			return false, fmt.Errorf("clearing dangling active_mr %s for polecat %s: %w", activeMR, name, clearErr)
+		}
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("cannot verify active_mr %s for polecat %s: %w", activeMR, name, err)
+	}
+	if beads.IssueStatus(mrBead.Status).IsTerminal() {
+		if clearErr := m.agentBeads().UpdateAgentActiveMR(agentID, ""); clearErr != nil {
+			return false, fmt.Errorf("clearing terminal active_mr %s for polecat %s: %w", activeMR, name, clearErr)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
 // repoBase returns the git directory and Git object to use for worktree operations.
 // Prefers the shared bare repo (.repo.git) if it exists, otherwise falls back to mayor/rig.
 // The bare repo architecture allows all worktrees (refinery, polecats) to share branch visibility.
@@ -1141,30 +1201,13 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 
 	// Check for uncommitted work unless bypassed
 	if !nuclear {
-		// ZFC #10: First try to read cleanup_status from agent bead
-		// This is the ZFC-compliant path - trust what the polecat reported
 		cleanupStatus := m.getCleanupStatusFromBead(name)
-
-		if cleanupStatus != CleanupUnknown {
-			// ZFC path: Use polecat's self-reported status
-			if err := m.checkCleanupStatus(name, cleanupStatus, force); err != nil {
-				return err
-			}
-		} else {
-			// Fallback path: Check git directly (for polecats that haven't reported yet)
-			polecatGit := git.NewGit(clonePath)
-			status, err := polecatGit.CheckUncommittedWork()
-			if err == nil && !status.Clean() {
-				if force {
-					// Force mode: bypass uncommitted changes and unpushed commits.
-					// Only block on stashes, which represent intentional work-in-progress.
-					if status.StashCount > 0 {
-						return &UncommittedWorkError{PolecatName: name, Status: status}
-					}
-				} else {
-					return &UncommittedWorkError{PolecatName: name, Status: status}
-				}
-			}
+		cleanupStatus, err := m.reconcileCleanupStatus(name, cleanupStatus)
+		if err != nil {
+			return fmt.Errorf("cannot verify cleanup_status for polecat %s: %w", name, err)
+		}
+		if err := m.checkCleanupStatus(name, cleanupStatus, force); err != nil {
+			return err
 		}
 	}
 
@@ -1173,12 +1216,12 @@ func (m *Manager) RemoveWithOptions(name string, force, nuclear, selfNuke bool) 
 	// but MR status is a higher-level concern that should always be checked.
 	if !force {
 		agentID := m.agentBeadID(name)
-		_, fields, aErr := m.agentBeads().GetAgentBead(agentID)
-		if aErr == nil && fields != nil && fields.ActiveMR != "" {
-			mrBead, mrErr := m.beads.Show(fields.ActiveMR)
-			if mrErr == nil && mrBead != nil && beads.IssueStatus(mrBead.Status).BlocksRemoval() {
-				return fmt.Errorf("cannot remove polecat %s: MR %s is still open in merge queue\nRefinery will process the MR and clean up after merge\nUse --force to override (risks data loss)", name, fields.ActiveMR)
-			}
+		pendingMR, activeMR, mrErr := m.resolveAgentActiveMR(name, agentID)
+		if mrErr != nil {
+			return mrErr
+		}
+		if pendingMR {
+			return fmt.Errorf("cannot remove polecat %s: MR %s is still open in merge queue\nRefinery will process the MR and clean up after merge\nUse --force to override (risks data loss)", name, activeMR)
 		}
 	}
 
@@ -2173,6 +2216,14 @@ func (m *Manager) reuseDecisionForPolecat(name string, state State) SlotReuseDec
 		if fields.CleanupStatus != "" {
 			input.CleanupStatus = CleanupStatus(fields.CleanupStatus)
 		}
+		if fields.ActiveMR != "" {
+			pendingMR, err := m.resolveActiveMR(name, agentID, fields.ActiveMR)
+			if err != nil {
+				input.ActiveMRFailed = true
+			} else if pendingMR {
+				input.ActiveMR = fields.ActiveMR
+			}
+		}
 	}
 
 	clonePath := m.clonePath(name)
@@ -2199,10 +2250,12 @@ func (m *Manager) reuseDecisionForPolecat(name string, state State) SlotReuseDec
 			input.GitCheckFailed = true
 		}
 	}
-	// Legacy/test polecats can lack agent cleanup metadata. If git proves there is
-	// no local work at risk, treat the missing cleanup_status as clean; otherwise
-	// DecideSlotReuse will continue to fail closed on CleanupUnknown.
-	if input.CleanupStatus == CleanupUnknown && !input.GitCheckFailed && !input.GitDirty && input.StashCount == 0 && input.UnpushedCommits == 0 {
+	// If git proves there is no local work at risk, reconcile stale or missing
+	// cleanup_status to clean; otherwise DecideSlotReuse fails closed.
+	if !input.GitCheckFailed && !input.GitDirty && input.StashCount == 0 && input.UnpushedCommits == 0 {
+		if input.CleanupStatus != CleanupClean {
+			_ = m.agentBeads().UpdateAgentCleanupStatus(agentID, string(CleanupClean))
+		}
 		input.CleanupStatus = CleanupClean
 	}
 	return DecideSlotReuse(input)

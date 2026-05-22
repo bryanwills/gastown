@@ -989,6 +989,7 @@ type RecoveryStatus struct {
 	Branch        string                `json:"branch,omitempty"`
 	Issue         string                `json:"issue,omitempty"`
 	MQStatus      string                `json:"mq_status,omitempty"` // "submitted", "not_submitted", "not_required", "unknown"
+	Reason        string                `json:"reason,omitempty"`
 }
 
 func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
@@ -1022,42 +1023,35 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 		Issue:   p.Issue,
 	}
 
-	if err != nil || fields == nil {
-		// No agent bead or no cleanup_status - fall back to git check
-		// This handles polecats that haven't self-reported yet
-		gitState, gitErr := getGitState(p.ClonePath)
-		if gitErr != nil {
-			status.CleanupStatus = polecat.CleanupUnknown
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-		} else if gitState.Clean {
-			status.CleanupStatus = polecat.CleanupClean
-			status.NeedsRecovery = false
-			status.Verdict = "SAFE_TO_NUKE"
-		} else if gitState.UnpushedCommits > 0 {
-			status.CleanupStatus = polecat.CleanupUnpushed
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-		} else if gitState.StashCount > 0 {
-			status.CleanupStatus = polecat.CleanupStash
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-		} else {
-			status.CleanupStatus = polecat.CleanupUncommitted
-			status.NeedsRecovery = true
-			status.Verdict = "NEEDS_RECOVERY"
-		}
+	gitState, gitErr := getGitState(p.ClonePath)
+	if gitErr != nil {
+		status.CleanupStatus = polecat.CleanupUnknown
+		status.NeedsRecovery = true
+		status.Verdict = "NEEDS_RECOVERY"
+		status.Reason = fmt.Sprintf("cannot verify direct git evidence: %v", gitErr)
 	} else {
-		// Use cleanup_status from agent bead
-		status.CleanupStatus = polecat.CleanupStatus(fields.CleanupStatus)
-		if status.CleanupStatus.IsSafe() && isActiveMRTerminal(bd, fields.ActiveMR) {
-			status.NeedsRecovery = false
-			status.Verdict = "SAFE_TO_NUKE"
+		status.CleanupStatus = cleanupStatusFromGitState(gitState)
+		status.NeedsRecovery = !status.CleanupStatus.IsSafe()
+		if status.NeedsRecovery {
+			status.Verdict = "NEEDS_RECOVERY"
 		} else {
-			// RequiresRecovery covers uncommitted, stash, unpushed
-			// Unknown/empty also treated conservatively
+			status.Verdict = "SAFE_TO_NUKE"
+		}
+		if err == nil && fields != nil && fields.CleanupStatus != string(status.CleanupStatus) {
+			_ = bd.ForAgentBead().UpdateAgentCleanupStatus(agentBeadID, string(status.CleanupStatus))
+		}
+	}
+
+	if err == nil && fields != nil && fields.ActiveMR != "" {
+		activeMRPending, activeMRErr := resolveActiveMRForRecovery(bd, agentBeadID, fields.ActiveMR)
+		if activeMRErr != nil {
 			status.NeedsRecovery = true
 			status.Verdict = "NEEDS_RECOVERY"
+			status.Reason = activeMRErr.Error()
+		} else if activeMRPending {
+			status.NeedsRecovery = true
+			status.Verdict = "NEEDS_RECOVERY"
+			status.Reason = fmt.Sprintf("active_mr %s is still open", fields.ActiveMR)
 		}
 	}
 
@@ -1095,6 +1089,9 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 	if status.Issue != "" {
 		fmt.Printf("  Issue:           %s\n", status.Issue)
 	}
+	if status.Reason != "" {
+		fmt.Printf("  Reason:          %s\n", status.Reason)
+	}
 	fmt.Println()
 
 	switch status.Verdict {
@@ -1125,21 +1122,55 @@ type issueShower interface {
 	Show(issueID string) (*beads.Issue, error)
 }
 
-func isActiveMRTerminal(bd issueShower, mrID string) bool {
+func cleanupStatusFromGitState(state *GitState) polecat.CleanupStatus {
+	if state == nil {
+		return polecat.CleanupUnknown
+	}
+	if state.StashCount > 0 {
+		return polecat.CleanupStash
+	}
+	if state.UnpushedCommits > 0 || state.NeedsReconcile {
+		return polecat.CleanupUnpushed
+	}
+	if len(state.UncommittedFiles) > 0 {
+		return polecat.CleanupUncommitted
+	}
+	return polecat.CleanupClean
+}
+
+func resolveActiveMRForRecovery(bd *beads.Beads, agentBeadID, mrID string) (bool, error) {
+	pending, err := activeMRPending(bd, mrID)
+	if err != nil || pending {
+		return pending, err
+	}
+	if mrID != "" && agentBeadID != "" {
+		if clearErr := bd.ForAgentBead().UpdateAgentActiveMR(agentBeadID, ""); clearErr != nil {
+			return false, fmt.Errorf("clearing stale active_mr %s: %w", mrID, clearErr)
+		}
+	}
+	return false, nil
+}
+
+func activeMRPending(bd issueShower, mrID string) (bool, error) {
 	if mrID == "" {
-		return true
+		return false, nil
 	}
 	if bd == nil {
-		return false
+		return true, fmt.Errorf("cannot verify active_mr %s: bead reader unavailable", mrID)
 	}
 	mr, err := bd.Show(mrID)
-	if errors.Is(err, beads.ErrNotFound) {
-		return true
+	if errors.Is(err, beads.ErrNotFound) || (err == nil && mr == nil) {
+		return false, nil
 	}
-	if err != nil || mr == nil {
-		return false
+	if err != nil {
+		return true, fmt.Errorf("cannot verify active_mr %s: %w", mrID, err)
 	}
-	return beads.IssueStatus(mr.Status).IsTerminal()
+	return !beads.IssueStatus(mr.Status).IsTerminal(), nil
+}
+
+func isActiveMRTerminal(bd issueShower, mrID string) bool {
+	pending, err := activeMRPending(bd, mrID)
+	return err == nil && !pending
 }
 
 // mrFinder is the subset of *beads.Beads that applyMQCheck needs. It lets us
