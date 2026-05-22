@@ -103,7 +103,7 @@ func runEscalate(cmd *cobra.Command, args []string) error {
 	targets := extractMailTargetsFromActions(actions)
 
 	// Send mail to each target (actions with "mail:" prefix)
-	router := mail.NewRouter(townRoot)
+	router := mail.NewRouterWithTownRoot(townRoot, townRoot)
 	defer router.WaitPendingNotifications()
 	statuses := []deliveryStatus{{Channel: "bead", Created: true, Severity: severity}}
 	for _, target := range targets {
@@ -376,7 +376,7 @@ func clearSatisfiedEscalationNudges(townRoot, address, escalationID string) {
 	if escalationID == "" {
 		return
 	}
-	router := mail.NewRouter(townRoot)
+	router := mail.NewRouterWithTownRoot(townRoot, townRoot)
 	if err := router.ClearSatisfiedNotifications(address, escalationID); err != nil {
 		style.PrintWarning("could not clear satisfied escalation reminders: %v", err)
 	}
