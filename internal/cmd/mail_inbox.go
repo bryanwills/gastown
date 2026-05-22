@@ -17,19 +17,25 @@ import (
 
 // getMailbox returns the mailbox for the given address.
 func getMailbox(address string) (*mail.Mailbox, error) {
+	router, err := getMailRouter()
+	if err != nil {
+		return nil, err
+	}
+	mailbox, err := router.GetMailbox(address)
+	if err != nil {
+		return nil, fmt.Errorf("getting mailbox: %w", err)
+	}
+	return mailbox, nil
+}
+
+func getMailRouter() (*mail.Router, error) {
 	// All mail uses town beads (two-level architecture)
 	workDir, err := findMailWorkDir()
 	if err != nil {
 		return nil, fmt.Errorf("not in a Gas Town workspace: %w", err)
 	}
 
-	// Get mailbox
-	router := mail.NewRouter(workDir)
-	mailbox, err := router.GetMailbox(address)
-	if err != nil {
-		return nil, fmt.Errorf("getting mailbox: %w", err)
-	}
-	return mailbox, nil
+	return mail.NewRouter(workDir), nil
 }
 
 func runMailInbox(cmd *cobra.Command, args []string) error {
@@ -500,9 +506,13 @@ func runMailMarkRead(cmd *cobra.Command, args []string) error {
 	// Determine which inbox
 	address := detectSender()
 
-	mailbox, err := getMailbox(address)
+	router, err := getMailRouter()
 	if err != nil {
 		return err
+	}
+	mailbox, err := router.GetMailbox(address)
+	if err != nil {
+		return fmt.Errorf("getting mailbox: %w", err)
 	}
 
 	// --all: mark all unread messages as read
@@ -523,6 +533,7 @@ func runMailMarkRead(cmd *cobra.Command, args []string) error {
 			if err := mailbox.MarkReadOnly(msg.ID); err != nil {
 				style.PrintWarning("could not mark %s as read: %v", msg.ID, err)
 			} else {
+				clearSatisfiedMailNudges(router, address, msg)
 				marked++
 			}
 		}
@@ -538,9 +549,15 @@ func runMailMarkRead(cmd *cobra.Command, args []string) error {
 	marked := 0
 	var errors []string
 	for _, msgID := range args {
+		msg, err := mailbox.Get(msgID)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", msgID, err))
+			continue
+		}
 		if err := mailbox.MarkReadOnly(msgID); err != nil {
 			errors = append(errors, fmt.Sprintf("%s: %v", msgID, err))
 		} else {
+			clearSatisfiedMailNudges(router, address, msg)
 			marked++
 		}
 	}
@@ -561,6 +578,19 @@ func runMailMarkRead(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%s Marked %d messages as read\n", style.Bold.Render("✓"), marked)
 	}
 	return nil
+}
+
+type satisfiedNotificationClearer interface {
+	ClearSatisfiedNotifications(address, threadID string) error
+}
+
+func clearSatisfiedMailNudges(clearer satisfiedNotificationClearer, address string, msg *mail.Message) {
+	if msg == nil || msg.ThreadID == "" {
+		return
+	}
+	if err := clearer.ClearSatisfiedNotifications(address, msg.ThreadID); err != nil {
+		style.PrintWarning("could not clear satisfied notification reminders: %v", err)
+	}
 }
 
 func runMailMarkUnread(cmd *cobra.Command, args []string) error {

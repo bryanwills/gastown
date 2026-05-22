@@ -2007,6 +2007,76 @@ func TestClearReplyReminders(t *testing.T) {
 	}
 }
 
+func TestClearSatisfiedNotifications_MailReadClearsMailAndReplyReminder(t *testing.T) {
+	townRoot := t.TempDir()
+	r := &Router{workDir: t.TempDir(), townRoot: townRoot}
+	sessionID := session.CrewSessionName(session.PrefixFor("gastown"), "bob")
+
+	queued := []nudge.QueuedNudge{
+		{Sender: "mayor/", Message: "mail", Kind: "mail", ThreadID: "thread-1"},
+		{Sender: "system", Message: "reply", Kind: "reply-reminder", ThreadID: "thread-1"},
+		{Sender: "system", Message: "keep-escalation", Kind: "escalation", ThreadID: "thread-2"},
+		{Sender: "system", Message: "keep-other-thread", Kind: "reply-reminder", ThreadID: "thread-2"},
+	}
+	for _, n := range queued {
+		if err := nudge.Enqueue(townRoot, sessionID, n); err != nil {
+			t.Fatalf("Enqueue(%q): %v", n.Message, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := r.ClearSatisfiedNotifications("gastown/crew/bob", "thread-1"); err != nil {
+		t.Fatalf("ClearSatisfiedNotifications: %v", err)
+	}
+
+	nudges, err := nudge.Drain(townRoot, sessionID)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(nudges) != 2 {
+		t.Fatalf("Drain returned %d nudges, want 2", len(nudges))
+	}
+	if nudges[0].Message != "keep-escalation" {
+		t.Fatalf("nudges[0].Message = %q, want %q", nudges[0].Message, "keep-escalation")
+	}
+	if nudges[1].Message != "keep-other-thread" {
+		t.Fatalf("nudges[1].Message = %q, want %q", nudges[1].Message, "keep-other-thread")
+	}
+}
+
+func TestClearSatisfiedNotifications_EscalationAckClearsEscalation(t *testing.T) {
+	townRoot := t.TempDir()
+	r := &Router{workDir: t.TempDir(), townRoot: townRoot}
+	sessionID := session.CrewSessionName(session.PrefixFor("gastown"), "bob")
+
+	queued := []nudge.QueuedNudge{
+		{Sender: "witness", Message: "escalation", Kind: "escalation", ThreadID: "hq-esc123"},
+		{Sender: "system", Message: "legacy-reply", Kind: "reply-reminder", ThreadID: "hq-esc123"},
+		{Sender: "system", Message: "keep-other-escalation", Kind: "escalation", ThreadID: "hq-esc456"},
+	}
+	for _, n := range queued {
+		if err := nudge.Enqueue(townRoot, sessionID, n); err != nil {
+			t.Fatalf("Enqueue(%q): %v", n.Message, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := r.ClearSatisfiedNotifications("gastown/crew/bob", "hq-esc123"); err != nil {
+		t.Fatalf("ClearSatisfiedNotifications: %v", err)
+	}
+
+	nudges, err := nudge.Drain(townRoot, sessionID)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(nudges) != 1 {
+		t.Fatalf("Drain returned %d nudges, want 1", len(nudges))
+	}
+	if nudges[0].Message != "keep-other-escalation" {
+		t.Fatalf("nudges[0].Message = %q, want %q", nudges[0].Message, "keep-other-escalation")
+	}
+}
+
 // TestEnqueueReplyReminder_SkipsReply verifies that reply-type messages do not
 // trigger a reply reminder (would be redundant noise).
 func TestEnqueueReplyReminder_SkipsReply(t *testing.T) {

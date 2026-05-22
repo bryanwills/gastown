@@ -18,6 +18,21 @@ func (f *fakeInboxLister) List() ([]*mail.Message, error) {
 	return f.messages, f.err
 }
 
+type clearCall struct {
+	address  string
+	threadID string
+}
+
+type fakeSatisfiedClearer struct {
+	calls []clearCall
+	err   error
+}
+
+func (f *fakeSatisfiedClearer) ClearSatisfiedNotifications(address, threadID string) error {
+	f.calls = append(f.calls, clearCall{address: address, threadID: threadID})
+	return f.err
+}
+
 func TestLoadInboxSnapshotListsOnceAndCounts(t *testing.T) {
 	box := &fakeInboxLister{
 		messages: []*mail.Message{
@@ -79,5 +94,45 @@ func TestLoadInboxSnapshotPropagatesListError(t *testing.T) {
 	}
 	if box.calls != 1 {
 		t.Fatalf("List calls = %d, want 1", box.calls)
+	}
+}
+
+func TestMailMarkReadSingleClearsSatisfiedNudges(t *testing.T) {
+	clearer := &fakeSatisfiedClearer{}
+	msg := &mail.Message{ID: "hq-msg1", ThreadID: "thread-1"}
+
+	clearSatisfiedMailNudges(clearer, "gastown/crew/bob", msg)
+
+	if len(clearer.calls) != 1 {
+		t.Fatalf("clear calls = %d, want 1", len(clearer.calls))
+	}
+	if clearer.calls[0].address != "gastown/crew/bob" {
+		t.Fatalf("clear address = %q, want %q", clearer.calls[0].address, "gastown/crew/bob")
+	}
+	if clearer.calls[0].threadID != "thread-1" {
+		t.Fatalf("clear thread = %q, want %q", clearer.calls[0].threadID, "thread-1")
+	}
+}
+
+func TestMailMarkReadAllClearsSatisfiedNudgesForEachMessage(t *testing.T) {
+	clearer := &fakeSatisfiedClearer{}
+	messages := []*mail.Message{
+		{ID: "hq-msg1", ThreadID: "thread-1"},
+		{ID: "hq-msg2", ThreadID: "thread-2"},
+		{ID: "hq-msg3"},
+	}
+
+	for _, msg := range messages {
+		clearSatisfiedMailNudges(clearer, "gastown/crew/bob", msg)
+	}
+
+	if len(clearer.calls) != 2 {
+		t.Fatalf("clear calls = %d, want 2", len(clearer.calls))
+	}
+	if clearer.calls[0].threadID != "thread-1" {
+		t.Fatalf("first clear thread = %q, want %q", clearer.calls[0].threadID, "thread-1")
+	}
+	if clearer.calls[1].threadID != "thread-2" {
+		t.Fatalf("second clear thread = %q, want %q", clearer.calls[1].threadID, "thread-2")
 	}
 }

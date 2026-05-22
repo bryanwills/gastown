@@ -1824,21 +1824,36 @@ func (r *Router) enqueueReplyReminder(msg *Message, sessionID string) {
 	}
 }
 
-// ClearReplyReminders removes any queued reply-reminder nudges for the given
-// recipient identity and thread. This is best-effort cleanup after a successful
-// reply send so satisfied threads do not keep re-nudging.
-func (r *Router) ClearReplyReminders(address, threadID string) error {
+// ClearThreadNudges removes queued nudges for the given recipient identity,
+// thread, and kinds. This is best-effort cleanup after a thread is satisfied so
+// stale prompts do not keep re-nudging.
+func (r *Router) ClearThreadNudges(address, threadID string, kinds ...string) error {
 	if r.townRoot == "" || threadID == "" {
 		return nil
 	}
 
 	var firstErr error
 	for _, sessionID := range AddressToSessionIDs(address) {
-		if _, err := nudge.RemoveKindByThread(r.townRoot, sessionID, "reply-reminder", threadID); err != nil && firstErr == nil {
-			firstErr = err
+		for _, kind := range kinds {
+			if _, err := nudge.RemoveKindByThread(r.townRoot, sessionID, kind, threadID); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
+}
+
+// ClearReplyReminders removes any queued reply-reminder nudges for the given
+// recipient identity and thread. This is best-effort cleanup after a successful
+// reply send so satisfied threads do not keep re-nudging.
+func (r *Router) ClearReplyReminders(address, threadID string) error {
+	return r.ClearThreadNudges(address, threadID, "reply-reminder")
+}
+
+// ClearSatisfiedNotifications removes queued notification/reminder nudges for a
+// thread that has been acknowledged or read.
+func (r *Router) ClearSatisfiedNotifications(address, threadID string) error {
+	return r.ClearThreadNudges(address, threadID, "mail", "escalation", "reply-reminder")
 }
 
 // IsRecipientMuted checks if a mail recipient has DND/muted notifications enabled.

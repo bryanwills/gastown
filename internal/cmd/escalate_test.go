@@ -9,6 +9,8 @@ import (
 
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/nudge"
+	"github.com/steveyegge/gastown/internal/session"
 )
 
 func TestGetNextSeverity(t *testing.T) {
@@ -31,6 +33,36 @@ func TestGetNextSeverity(t *testing.T) {
 				t.Errorf("getNextSeverity(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClearSatisfiedEscalationNudgesClearsAckedThread(t *testing.T) {
+	townRoot := t.TempDir()
+	sessionID := session.CrewSessionName(session.PrefixFor("gastown"), "bob")
+
+	queued := []nudge.QueuedNudge{
+		{Sender: "witness", Message: "acked-escalation", Kind: "escalation", ThreadID: "hq-esc123"},
+		{Sender: "system", Message: "legacy-reply-reminder", Kind: "reply-reminder", ThreadID: "hq-esc123"},
+		{Sender: "witness", Message: "unrelated-escalation", Kind: "escalation", ThreadID: "hq-esc456"},
+	}
+	for _, n := range queued {
+		if err := nudge.Enqueue(townRoot, sessionID, n); err != nil {
+			t.Fatalf("Enqueue(%q): %v", n.Message, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	clearSatisfiedEscalationNudges(townRoot, "gastown/crew/bob", "hq-esc123")
+
+	nudges, err := nudge.Drain(townRoot, sessionID)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(nudges) != 1 {
+		t.Fatalf("Drain returned %d nudges, want 1", len(nudges))
+	}
+	if nudges[0].Message != "unrelated-escalation" {
+		t.Fatalf("remaining message = %q, want %q", nudges[0].Message, "unrelated-escalation")
 	}
 }
 
