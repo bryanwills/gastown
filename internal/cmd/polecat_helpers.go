@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,46 @@ func resolvePolecatTargets(args []string, useAll bool) ([]polecatTarget, error) 
 	}
 
 	return targets, nil
+}
+
+type issueShower interface {
+	Show(issueID string) (*beads.Issue, error)
+}
+
+func cleanupStatusBlocker(status polecat.CleanupStatus) string {
+	switch status {
+	case polecat.CleanupClean:
+		return ""
+	case "":
+		return "cleanup_status=<missing>"
+	case polecat.CleanupUnknown:
+		return "cleanup_status=unknown"
+	default:
+		return fmt.Sprintf("cleanup_status=%s", status)
+	}
+}
+
+func activeMRBlocker(bd issueShower, mrID string) string {
+	if mrID == "" {
+		return ""
+	}
+	if bd == nil {
+		return fmt.Sprintf("active_mr=%s status=unverified", mrID)
+	}
+	mr, err := bd.Show(mrID)
+	if err != nil {
+		if errors.Is(err, beads.ErrNotFound) {
+			return ""
+		}
+		return fmt.Sprintf("active_mr=%s status=lookup_error: %v", mrID, err)
+	}
+	if mr == nil {
+		return ""
+	}
+	if beads.IssueStatus(mr.Status).IsTerminal() {
+		return ""
+	}
+	return fmt.Sprintf("active_mr=%s status=%s", mrID, mr.Status)
 }
 
 // SafetyCheckResult holds the result of safety checks for a polecat.

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -314,7 +313,7 @@ func cleanupStalePolecatAdmissionReservations(townRoot string, now time.Time) er
 			continue
 		}
 		age := now.Sub(reservation.CreatedAt)
-		if processAlive(reservation.PID) {
+		if isProcessRunning(reservation.PID) {
 			continue
 		}
 		if age < polecatAdmissionReservationTTL {
@@ -335,14 +334,4 @@ func cleanupStalePolecatAdmissionReservationsWithLock(townRoot string, now time.
 	}
 	defer func() { _ = lock.Unlock() }()
 	return cleanupStalePolecatAdmissionReservations(townRoot, now)
-}
-
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	if err := syscall.Kill(pid, 0); err != nil {
-		return false
-	}
-	return true
 }

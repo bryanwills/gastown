@@ -124,6 +124,8 @@ func runSlingFormula(ctx context.Context, args []string) error {
 		admissionRig := ""
 		if rigName, isRig := IsRigName(target); isRig {
 			admissionRig = rigName
+		} else if rigName, ok := missingPolecatTargetRig(target, slingCreate, townRoot); ok {
+			admissionRig = rigName
 		}
 		if admissionRig != "" {
 			admission, _, err = acquirePolecatAdmissionFn(townRoot, admissionRig, formulaName, "formula")

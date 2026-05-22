@@ -228,15 +228,30 @@ func executeSling(params SlingParams) (*SlingResult, error) {
 		}
 	}
 
+	var admission *polecatAdmissionHandle
+	if params.RigName != "" {
+		var snapshot polecatCapacitySnapshot
+		admission, snapshot, err = acquirePolecatAdmissionFn(townRoot, params.RigName, params.BeadID, "dispatch")
+		if err != nil {
+			result.ErrMsg = err.Error()
+			return result, err
+		}
+		defer admission.Release()
+		if snapshot.Max > 0 {
+			fmt.Printf("  %s Polecat capacity reserved (%d free of %d)\n", style.Dim.Render("○"), snapshot.Free, snapshot.Max)
+		}
+	}
+
 	// 3. Spawn polecat (via spawnPolecatForSling)
 	spawnOpts := SlingSpawnOptions{
-		TownRoot:     townRoot,
-		Force:        params.Force,
-		Account:      params.Account,
-		HookBead:     params.BeadID,
-		Agent:        params.Agent,
-		BaseBranch:   params.BaseBranch,
-		ResumeBranch: params.ResumeBranch,
+		TownRoot:      townRoot,
+		Force:         params.Force,
+		Account:       params.Account,
+		HookBead:      params.BeadID,
+		Agent:         params.Agent,
+		BaseBranch:    params.BaseBranch,
+		ResumeBranch:  params.ResumeBranch,
+		SkipAdmission: admission != nil,
 		// Create is always true for rig targets: executeSling only handles
 		// rig-targeted dispatch (batch sling + queue dispatch), where a fresh
 		// polecat must be spawned. The single-sling path (runSling) handles

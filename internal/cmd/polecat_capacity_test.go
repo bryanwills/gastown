@@ -347,6 +347,101 @@ func TestResolveTargetRigPassesHeldAdmissionToSpawn(t *testing.T) {
 	}
 }
 
+func TestExecuteSlingHoldsAdmissionUntilHookAttempt(t *testing.T) {
+	townRoot := setupPolecatCapacityRig(t, 1)
+	if err := os.MkdirAll(filepath.Join(townRoot, "gastown", ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir rig beads: %v", err)
+	}
+
+	binDir := filepath.Join(townRoot, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("mkdir binDir: %v", err)
+	}
+	bdScript := `#!/bin/sh
+if [ "$1" = "--db" ]; then
+  shift
+  shift
+fi
+cmd="$1"
+case "$cmd" in
+  show)
+    echo '[{"title":"Work","status":"open","assignee":"","description":""}]'
+    ;;
+  update|create|cook|mol|dep|close)
+    exit 0
+    ;;
+esac
+exit 0
+`
+	bdScriptWindows := `@echo off
+if "%1"=="--db" (
+  shift
+  shift
+)
+if "%1"=="show" (
+  echo [{"title":"Work","status":"open","assignee":"","description":""}]
+  exit /b 0
+)
+exit /b 0
+`
+	writeBDStub(t, binDir, bdScript, bdScriptWindows)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GT_TEST_NO_NUDGE", "1")
+	t.Setenv("GT_TEST_SKIP_HOOK_VERIFY", "1")
+
+	oldSpawn := spawnPolecatForSling
+	oldHook := hookBeadWithRetryFn
+	t.Cleanup(func() {
+		spawnPolecatForSling = oldSpawn
+		hookBeadWithRetryFn = oldHook
+	})
+
+	spawnPolecatForSling = func(rigName string, opts SlingSpawnOptions) (*SpawnedPolecatInfo, error) {
+		if rigName != "gastown" {
+			t.Fatalf("rigName = %q, want gastown", rigName)
+		}
+		if !opts.SkipAdmission {
+			t.Fatal("executeSling should pass caller-held admission to spawn")
+		}
+		return &SpawnedPolecatInfo{
+			RigName:     "gastown",
+			PolecatName: "toast",
+			ClonePath:   filepath.Join(townRoot, "gastown", "polecats", "toast", "gastown"),
+			SessionName: "gt-gastown-polecat-toast",
+		}, nil
+	}
+
+	hookBeadWithRetryFn = func(beadID, targetAgent, hookDir string) error {
+		reservations, err := readPolecatAdmissionReservations(townRoot)
+		if err != nil {
+			t.Fatalf("read reservations during hook: %v", err)
+		}
+		if len(reservations) != 1 {
+			t.Fatalf("reservations during hook = %d, want 1", len(reservations))
+		}
+		return errors.New("hook failed after spawn")
+	}
+
+	_, err := executeSling(SlingParams{
+		BeadID:   "gt-work",
+		RigName:  "gastown",
+		TownRoot: townRoot,
+		BeadsDir: filepath.Join(townRoot, ".beads"),
+		NoConvoy: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "failed to hook bead") {
+		t.Fatalf("executeSling error = %v, want hook failure", err)
+	}
+
+	reservations, err := readPolecatAdmissionReservations(townRoot)
+	if err != nil {
+		t.Fatalf("read reservations after return: %v", err)
+	}
+	if len(reservations) != 0 {
+		t.Fatalf("reservations after return = %d, want 0", len(reservations))
+	}
+}
+
 func TestStandaloneFormulaRigTargetAcquiresSingleAdmission(t *testing.T) {
 	townRoot := setupPolecatCapacityRig(t, 1)
 	oldAcquire := acquirePolecatAdmissionFn

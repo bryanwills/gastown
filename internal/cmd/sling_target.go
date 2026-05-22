@@ -139,6 +139,7 @@ type ResolvedTarget struct {
 	HookSetAtomically bool
 	DelayedDogInfo    *DogDispatchInfo
 	NewPolecatInfo    *SpawnedPolecatInfo
+	PolecatAdmission  *polecatAdmissionHandle
 	IsSelfSling       bool
 }
 
@@ -231,8 +232,15 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 			return result, nil
 		}
 		fmt.Printf("Target is rig '%s', spawning fresh polecat...\n", rigName)
+		var admission *polecatAdmissionHandle
+		if !opts.SkipPolecatAdmission {
+			admission, _, err = acquirePolecatAdmissionFn(townRoot, rigName, opts.HookBead, "target-spawn")
+			if err != nil {
+				return nil, err
+			}
+		}
 		spawnOpts := SlingSpawnOptions{
-			TownRoot:      opts.TownRoot,
+			TownRoot:      townRoot,
 			Force:         opts.Force,
 			Account:       opts.Account,
 			Create:        opts.Create,
@@ -240,14 +248,18 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 			Agent:         opts.Agent,
 			BaseBranch:    opts.BaseBranch,
 			ResumeBranch:  opts.ResumeBranch,
-			SkipAdmission: opts.SkipPolecatAdmission,
+			SkipAdmission: opts.SkipPolecatAdmission || admission != nil,
 		}
 		spawnInfo, err := spawnPolecatForSling(rigName, spawnOpts)
 		if err != nil {
+			if admission != nil {
+				admission.Release()
+			}
 			return nil, fmt.Errorf("spawning polecat: %w", err)
 		}
 		result.Agent = spawnInfo.AgentID()
 		result.NewPolecatInfo = spawnInfo
+		result.PolecatAdmission = admission
 		result.WorkDir = spawnInfo.ClonePath
 		result.HookSetAtomically = opts.HookBead != ""
 		if !opts.NoBoot {
@@ -262,64 +274,49 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 	agentID, pane, workDir, err := resolveTargetAgentFn(target)
 	if err != nil {
 		if rigName, ok := missingPolecatTargetRig(target, opts.Create, opts.TownRoot); ok {
+			townRoot := opts.TownRoot
+			if townRoot == "" {
+				townRoot, _ = workspace.FindFromCwd()
+			}
 			if opts.BeadID != "" && !opts.Force {
-				if err := checkCrossRigGuard(opts.BeadID, rigName+"/polecats/_", opts.TownRoot); err != nil {
+				if err := checkCrossRigGuard(opts.BeadID, rigName+"/polecats/_", townRoot); err != nil {
 					return nil, err
 				}
-<<<<<<< HEAD
-=======
-				if opts.BeadID != "" {
-					if err := verifyBeadExistsInTargetRigDatabase(opts.BeadID, rigName, opts.TownRoot); err != nil {
-						return nil, err
-					}
-				}
-				fmt.Printf("Target polecat has no active session, spawning fresh polecat in rig '%s'...\n", rigName)
-				spawnOpts := SlingSpawnOptions{
-					TownRoot:      opts.TownRoot,
-					Force:         opts.Force,
-					Account:       opts.Account,
-					Create:        opts.Create,
-					HookBead:      opts.HookBead,
-					Agent:         opts.Agent,
-					BaseBranch:    opts.BaseBranch,
-					ResumeBranch:  opts.ResumeBranch,
-					SkipAdmission: opts.SkipPolecatAdmission,
-				}
-				spawnInfo, spawnErr := spawnPolecatForSling(rigName, spawnOpts)
-				if spawnErr != nil {
-					return nil, fmt.Errorf("spawning polecat to replace dead polecat: %w", spawnErr)
-				}
-				result.Agent = spawnInfo.AgentID()
-				result.NewPolecatInfo = spawnInfo
-				result.WorkDir = spawnInfo.ClonePath
-				result.HookSetAtomically = opts.HookBead != ""
-				if !opts.NoBoot {
-					wakeRigAgents(rigName)
-				}
-				return result, nil
->>>>>>> a80591ab (fix: enforce polecat cap admission)
 			}
 			if opts.BeadID != "" {
-				if err := verifyBeadExistsInTargetRigDatabase(opts.BeadID, rigName, opts.TownRoot); err != nil {
+				if err := verifyBeadExistsInTargetRigDatabase(opts.BeadID, rigName, townRoot); err != nil {
 					return nil, err
 				}
 			}
 			fmt.Printf("Target polecat has no active session, spawning fresh polecat in rig '%s'...\n", rigName)
+			var admission *polecatAdmissionHandle
+			if !opts.SkipPolecatAdmission {
+				admission, _, err = acquirePolecatAdmissionFn(townRoot, rigName, opts.HookBead, "target-spawn")
+				if err != nil {
+					return nil, err
+				}
+			}
 			spawnOpts := SlingSpawnOptions{
-				Force:        opts.Force,
-				Account:      opts.Account,
-				Create:       opts.Create,
-				HookBead:     opts.HookBead,
-				Agent:        opts.Agent,
-				BaseBranch:   opts.BaseBranch,
-				ResumeBranch: opts.ResumeBranch,
+				TownRoot:      townRoot,
+				Force:         opts.Force,
+				Account:       opts.Account,
+				Create:        opts.Create,
+				HookBead:      opts.HookBead,
+				Agent:         opts.Agent,
+				BaseBranch:    opts.BaseBranch,
+				ResumeBranch:  opts.ResumeBranch,
+				SkipAdmission: opts.SkipPolecatAdmission || admission != nil,
 			}
 			spawnInfo, spawnErr := spawnPolecatForSling(rigName, spawnOpts)
 			if spawnErr != nil {
+				if admission != nil {
+					admission.Release()
+				}
 				return nil, fmt.Errorf("spawning polecat to replace dead polecat: %w", spawnErr)
 			}
 			result.Agent = spawnInfo.AgentID()
 			result.NewPolecatInfo = spawnInfo
+			result.PolecatAdmission = admission
 			result.WorkDir = spawnInfo.ClonePath
 			result.HookSetAtomically = opts.HookBead != ""
 			if !opts.NoBoot {

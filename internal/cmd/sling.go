@@ -705,18 +705,39 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	if len(args) > 1 {
 		target = args[1]
 	}
+	var admission *polecatAdmissionHandle
+	if !slingDryRun && target != "" {
+		admissionRig := ""
+		if rigName, isRig := IsRigName(target); isRig {
+			admissionRig = rigName
+		} else if rigName, ok := missingPolecatTargetRig(target, slingCreate, townRoot); ok {
+			admissionRig = rigName
+		}
+		if admissionRig != "" {
+			var snapshot polecatCapacitySnapshot
+			admission, snapshot, err = acquirePolecatAdmissionFn(townRoot, admissionRig, beadID, "direct-target")
+			if err != nil {
+				return err
+			}
+			defer admission.Release()
+			if snapshot.Max > 0 {
+				fmt.Printf("%s Polecat capacity reserved (%d free of %d)\n", style.Dim.Render("○"), snapshot.Free, snapshot.Max)
+			}
+		}
+	}
 	resolved, err := resolveTarget(target, ResolveTargetOptions{
-		DryRun:       slingDryRun,
-		Force:        force,
-		Create:       slingCreate,
-		Account:      slingAccount,
-		Agent:        slingAgent,
-		NoBoot:       slingNoBoot,
-		HookBead:     beadID,
-		BeadID:       beadID,
-		TownRoot:     townRoot,
-		BaseBranch:   slingBaseBranch,
-		ResumeBranch: slingResumeBranch,
+		DryRun:               slingDryRun,
+		Force:                force,
+		Create:               slingCreate,
+		Account:              slingAccount,
+		Agent:                slingAgent,
+		NoBoot:               slingNoBoot,
+		HookBead:             beadID,
+		BeadID:               beadID,
+		TownRoot:             townRoot,
+		BaseBranch:           slingBaseBranch,
+		ResumeBranch:         slingResumeBranch,
+		SkipPolecatAdmission: admission != nil,
 	})
 	if err != nil {
 		return err
@@ -725,8 +746,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	targetPane := resolved.Pane
 	hookWorkDir := resolved.WorkDir
 	hookSetAtomically := resolved.HookSetAtomically
-	var admission *polecatAdmissionHandle
-	if !slingDryRun && !hookSetAtomically && strings.Contains(targetAgent, "/polecats/") {
+	if admission == nil && !slingDryRun && !hookSetAtomically && strings.Contains(targetAgent, "/polecats/") {
 		parts := strings.Split(targetAgent, "/")
 		if len(parts) >= 3 {
 			var snapshot polecatCapacitySnapshot
