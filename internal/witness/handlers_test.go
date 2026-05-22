@@ -1455,6 +1455,49 @@ func TestFindMRBeadForBranch_NoBdAvailable(t *testing.T) {
 	}
 }
 
+func TestFindOpenMRForAgentMatchesDurableOwner(t *testing.T) {
+	t.Parallel()
+	bd := &BdCli{
+		Exec: func(_ string, args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "query" {
+				return `[
+					{"id":"gt-mr1","description":"branch: polecat/other\nsource_issue: gt-old\nworker: polecats/other\nagent_bead: gt-gastown-polecat-other\n"},
+					{"id":"gt-mr2","description":"branch: polecat/guzzle\nsource_issue: gt-new\nworker: polecats/guzzle\nagent_bead: gt-gastown-polecat-guzzle\n"}
+				]`, nil
+			}
+			return "[]", nil
+		},
+	}
+
+	got := findOpenMRForAgent(bd, "/tmp", "guzzle", "gt-gastown-polecat-guzzle")
+	if got != "gt-mr2" {
+		t.Fatalf("findOpenMRForAgent = %q, want gt-mr2", got)
+	}
+}
+
+func TestHasPendingMRFromSnapshotFallsBackToOpenMR(t *testing.T) {
+	t.Parallel()
+	bd := &BdCli{
+		Exec: func(_ string, args ...string) (string, error) {
+			if len(args) == 0 {
+				return "[]", nil
+			}
+			switch args[0] {
+			case "list":
+				return "[]", nil
+			case "query":
+				return `[{"id":"gt-mr2","description":"branch: polecat/guzzle\nsource_issue: gt-new\nworker: polecats/guzzle\nagent_bead: gt-gastown-polecat-guzzle\n"}]`, nil
+			default:
+				return "[]", nil
+			}
+		},
+	}
+
+	if !hasPendingMRFromSnapshot(bd, "/tmp", "guzzle", "") {
+		t.Fatal("hasPendingMRFromSnapshot = false, want true for open MR with missing active_mr")
+	}
+}
+
 func TestDetectOrphanedMolecules_WithMockBd(t *testing.T) {
 	installFakeTmuxNoServer(t)
 

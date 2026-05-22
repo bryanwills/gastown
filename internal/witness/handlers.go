@@ -3098,7 +3098,13 @@ func hasPendingMR(bd *BdCli, workDir, _, polecatName, agentBeadID string) bool {
 
 	// Check 2: active_mr on agent bead (set by gt done when MR is created)
 	activeMR := getAgentActiveMR(bd, workDir, agentBeadID)
-	return activeMR != ""
+	if activeMR != "" {
+		return true
+	}
+
+	// Check 3: durable open MR ownership. active_mr is a cache on the agent bead;
+	// an open MR bead with matching agent_bead/worker still protects the branch.
+	return findOpenMRForAgent(bd, workDir, polecatName, agentBeadID) != ""
 }
 
 // hasPendingMRFromSnapshot checks for a pending MR using a pre-fetched ActiveMR
@@ -3111,7 +3117,45 @@ func hasPendingMRFromSnapshot(bd *BdCli, workDir, polecatName, activeMR string) 
 	}
 
 	// Check 2: active_mr from pre-fetched snapshot
-	return activeMR != ""
+	if activeMR != "" {
+		return true
+	}
+
+	// Check 3: durable open MR ownership by worker name when the cached active_mr
+	// field was not populated or was lost.
+	return findOpenMRForAgent(bd, workDir, polecatName, "") != ""
+}
+
+func findOpenMRForAgent(bd *BdCli, workDir, polecatName, agentBeadID string) string {
+	output, err := bd.Exec(workDir, "query",
+		"ephemeral=true AND label=gt:merge-request AND status=open",
+		"--json")
+	if err != nil || output == "" || output == "[]" || output == "null" {
+		return ""
+	}
+
+	var items []struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(output), &items); err != nil {
+		return ""
+	}
+
+	worker := "polecats/" + polecatName
+	for _, item := range items {
+		fields := beads.ParseMRFields(&beads.Issue{Description: item.Description})
+		if fields == nil {
+			continue
+		}
+		if agentBeadID != "" && fields.AgentBead == agentBeadID {
+			return item.ID
+		}
+		if fields.Worker == worker || fields.Worker == polecatName {
+			return item.ID
+		}
+	}
+	return ""
 }
 
 // getAgentActiveMR retrieves the active_mr field from a polecat's agent bead.

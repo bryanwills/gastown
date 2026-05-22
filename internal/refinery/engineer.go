@@ -1259,7 +1259,7 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 
 	// 1.5. Clear agent bead's active_mr reference (traceability cleanup)
 	if mr.AgentBead != "" {
-		if err := e.clearAgentActiveMR(mr.AgentBead); err != nil {
+		if err := e.clearAgentActiveMR(mr.AgentBead, mr.ID); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to clear agent bead %s active_mr: %v\n", mr.AgentBead, err)
 		}
 	}
@@ -1313,8 +1313,29 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 	_, _ = fmt.Fprintf(e.output, "[Engineer] ✓ Merged: %s (commit: %s)\n", mr.ID, result.MergeCommit)
 }
 
-func (e *Engineer) clearAgentActiveMR(agentBeadID string) error {
-	return e.beads.ForAgentBead().UpdateAgentActiveMR(agentBeadID, "")
+func (e *Engineer) clearAgentActiveMR(agentBeadID, mrID string) error {
+	cleared, err := e.beads.ForAgentBead().CompareAndClearAgentActiveMR(agentBeadID, mrID)
+	if err != nil {
+		return err
+	}
+	if !cleared {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Skipped active_mr clear for %s: current owner changed from %s\n", agentBeadID, mrID)
+	}
+	return nil
+}
+
+func (e *Engineer) shouldNudgeMRFailureOwner(mr *MRInfo) (bool, string) {
+	if mr == nil || mr.AgentBead == "" || mr.ID == "" {
+		return true, ""
+	}
+	activeMR, err := e.beads.ForAgentBead().GetAgentActiveMR(mr.AgentBead)
+	if err != nil || activeMR == "" {
+		return true, ""
+	}
+	if activeMR != mr.ID {
+		return false, fmt.Sprintf("agent bead %s now owns active_mr %s", mr.AgentBead, activeMR)
+	}
+	return true, ""
 }
 
 // HandleMRInfoFailure handles a failed merge from MRInfo.
@@ -1373,16 +1394,20 @@ func (e *Engineer) HandleMRInfoFailure(mr *MRInfo, result ProcessResult) {
 		failureType = "tests"
 	}
 	polecatName := strings.TrimPrefix(mr.Worker, "polecats/")
-	nudgeTarget := fmt.Sprintf("%s/%s", e.rig.Name, polecatName)
-	nudgeMsg := fmt.Sprintf("MERGE_FAILED: branch=%s issue=%s type=%s error=%s — fix and resubmit with 'gt done'",
-		mr.Branch, mr.SourceIssue, failureType, result.Error)
-	nudgeCmd := exec.Command("gt", "nudge", nudgeTarget, nudgeMsg)
-	util.SetDetachedProcessGroup(nudgeCmd)
-	nudgeCmd.Dir = e.workDir
-	if err := nudgeCmd.Run(); err != nil {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge %s about merge failure: %v\n", polecatName, err)
+	if shouldNudge, reason := e.shouldNudgeMRFailureOwner(mr); !shouldNudge {
+		_, _ = fmt.Fprintf(e.output, "[Engineer] Skipping direct failure nudge for %s: %s\n", mr.ID, reason)
 	} else {
-		_, _ = fmt.Fprintf(e.output, "[Engineer] Nudged %s about merge failure (%s)\n", polecatName, failureType)
+		nudgeTarget := fmt.Sprintf("%s/%s", e.rig.Name, polecatName)
+		nudgeMsg := fmt.Sprintf("MERGE_FAILED: branch=%s issue=%s type=%s error=%s — fix and resubmit with 'gt done'",
+			mr.Branch, mr.SourceIssue, failureType, result.Error)
+		nudgeCmd := exec.Command("gt", "nudge", nudgeTarget, nudgeMsg)
+		util.SetDetachedProcessGroup(nudgeCmd)
+		nudgeCmd.Dir = e.workDir
+		if err := nudgeCmd.Run(); err != nil {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to nudge %s about merge failure: %v\n", polecatName, err)
+		} else {
+			_, _ = fmt.Fprintf(e.output, "[Engineer] Nudged %s about merge failure (%s)\n", polecatName, failureType)
+		}
 	}
 
 	// Nudge mayor about merge failure so dispatcher can unblock or reassign

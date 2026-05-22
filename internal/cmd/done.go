@@ -1187,16 +1187,6 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 			}
 
-			// Update agent bead with active_mr reference (for traceability).
-			// Agent beads live in HQ regardless of rig prefix — bypass routing
-			// via ForAgentBead() to avoid the "issue not found" warning that
-			// leaves active_mr null after every gt done (hq-e73z).
-			if agentBeadID != "" {
-				if err := bd.ForAgentBead().UpdateAgentActiveMR(agentBeadID, mrID); err != nil {
-					style.PrintWarning("could not update agent bead with active_mr: %v", err)
-				}
-			}
-
 			// GH#2599: Back-link source issue to MR bead for discoverability.
 			if issueID != "" {
 				comment := fmt.Sprintf("MR created: %s", mrID)
@@ -1213,6 +1203,15 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			// (see post-merge nudge below). Nudging here would race with the
 			// merge — refinery wakes up and queries main before the polecat's
 			// Dolt branch (containing the MR bead) is merged.
+		}
+
+		// Update agent bead with active_mr reference (for traceability). This must
+		// also run for idempotent existing-MR submissions so reused polecats retain
+		// the durable MR owner after a retry.
+		if agentBeadID != "" && mrID != "" {
+			if err := bd.ForAgentBead().UpdateAgentActiveMR(agentBeadID, mrID); err != nil {
+				style.PrintWarning("could not update agent bead with active_mr: %v", err)
+			}
 		}
 
 		// Write MR checkpoint for resume (gt-aufru)
