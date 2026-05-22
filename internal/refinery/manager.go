@@ -627,24 +627,23 @@ func (m *Manager) PostMerge(idOrBranch string) (*PostMergeResult, error) {
 		result.MRClosed = true
 	}
 
-	// Close the source issue with reason and --force to bypass dependency checks.
-	// The source issue may have an attached molecule (wisp) whose open steps
-	// would block a normal bd close. ForceCloseWithReason bypasses this,
-	// matching how gt done handles closures for the no-MR path.
+	// Close the source issue through the shared idempotent transition helper.
 	if mr.IssueID != "" {
-		closeReason := fmt.Sprintf("Merged in %s", mr.ID)
-		if mr.MergeCommit != "" {
-			closeReason = fmt.Sprintf("%s\ntarget_branch: %s\ncommit_sha: %s", closeReason, mr.TargetBranch, mr.MergeCommit)
-		}
-		if err := b.ForceCloseWithReason(closeReason, mr.IssueID); err != nil {
-			// Check if already closed (by polecat's gt done) — that's fine
-			if issue, showErr := b.Show(mr.IssueID); showErr == nil && beads.IssueStatus(issue.Status).IsTerminal() {
-				_, _ = fmt.Fprintf(m.output, "  %s source issue already closed: %s\n", style.Dim.Render("○"), mr.IssueID)
-				result.SourceIssueClosed = true
-			} else {
-				_, _ = fmt.Fprintf(m.output, "  %s source issue close: %v\n", style.Dim.Render("○"), err)
-				result.SourceIssueNotFound = true
-			}
+		transition, err := b.TransitionSourceIssue(beads.SourceTransitionOptions{
+			Transition:    beads.SourceTransitionMergeSucceeded,
+			SourceIssueID: mr.IssueID,
+			MRID:          mr.ID,
+			TargetBranch:  mr.TargetBranch,
+			CommitSHA:     mr.MergeCommit,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintf(m.output, "  %s source issue close: %v\n", style.Dim.Render("○"), err)
+			result.SourceIssueNotFound = true
+		} else if transition != nil && transition.SourceAlreadyTerminal {
+			_, _ = fmt.Fprintf(m.output, "  %s source issue already closed: %s\n", style.Dim.Render("○"), mr.IssueID)
+			result.SourceIssueClosed = true
+		} else if transition != nil && transition.SourceNotFound {
+			result.SourceIssueNotFound = true
 		} else {
 			result.SourceIssueClosed = true
 		}

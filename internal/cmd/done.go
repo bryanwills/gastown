@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -483,6 +482,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	var convoyInfo *ConvoyInfo // Populated if issue is tracked by a convoy
 	target := defaultBranch
 	var sourceIssueForTarget *beads.Issue
+	var sourceTransition beads.SourceTransition
+	var sourceTransitionReason string
 	if exitType == ExitCompleted {
 		if branch == defaultBranch || branch == "master" {
 			return fmt.Errorf("cannot submit %s/master branch to merge queue", defaultBranch)
@@ -589,11 +590,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			fmt.Printf("  Work was likely pushed directly to main or already merged.\n")
 			fmt.Printf("  Skipping MR creation - completing without merge request.\n\n")
 
-			// G15 fix: Close the base issue when completing with no MR.
-			// Without this, no-op polecats (bug already fixed) leave issues stuck
-			// in HOOKED state with assignee pointing to the nuked polecat.
-			// Normally the Refinery closes after merge, but with no MR, nothing
-			// would ever close the issue.
+			// No-MR completions do not go through the refinery, so transition the
+			// source here instead of leaving it hooked to an idle polecat.
 			if issueID != "" {
 				bd := beads.New(cwd)
 
@@ -611,7 +609,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 					}
 				}
 
-				if !skipClose {
+				if skipClose {
+					sourceTransition = beads.SourceTransitionDoneDeferred
+				} else {
 					closeReason := "Completed with no code changes (already fixed or pushed directly to main)"
 					noMRCommitSHA, _ := g.Rev("HEAD")
 					if doneSkipVerify {
@@ -628,24 +628,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 							closeReason = fmt.Sprintf("%s\ntarget_branch: %s\ncommit_sha: %s", closeReason, target, noMRCommitSHA)
 						}
 					}
-					// G15 fix: Force-close bypasses molecule dependency checks.
-					// The polecat is about to be nuked — open wisps should not block closure.
-					// Retry with backoff handles transient dolt lock contention (A2).
-					var closeErr error
-					for attempt := 1; attempt <= 3; attempt++ {
-						closeErr = bd.ForceCloseWithReason(closeReason, issueID)
-						if closeErr == nil {
-							fmt.Printf("%s Issue %s closed (no MR needed)\n", style.Bold.Render("✓"), issueID)
-							break
-						}
-						if attempt < 3 {
-							style.PrintWarning("close attempt %d/3 failed: %v (retrying in %ds)", attempt, closeErr, attempt*2)
-							time.Sleep(time.Duration(attempt*2) * time.Second)
-						}
-					}
-					if closeErr != nil {
-						style.PrintWarning("could not close issue %s after 3 attempts: %v (issue may be left HOOKED)", issueID, closeErr)
-					}
+					sourceTransition = beads.SourceTransitionDirectDone
+					sourceTransitionReason = closeReason
 				}
 			}
 
@@ -757,26 +741,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			}
 			fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), target)
 
-			// Close the base issue — no MR/refinery will close it
-			if issueID != "" {
-				directBd := beads.New(cwd)
-				closeReason := fmt.Sprintf("Direct merge to %s (convoy strategy)", target)
-				var closeErr error
-				for attempt := 1; attempt <= 3; attempt++ {
-					closeErr = directBd.ForceCloseWithReason(closeReason, issueID)
-					if closeErr == nil {
-						fmt.Printf("%s Issue %s closed (direct merge)\n", style.Bold.Render("✓"), issueID)
-						break
-					}
-					if attempt < 3 {
-						style.PrintWarning("close attempt %d/3 failed: %v (retrying in %ds)", attempt, closeErr, attempt*2)
-						time.Sleep(time.Duration(attempt*2) * time.Second)
-					}
-				}
-				if closeErr != nil {
-					style.PrintWarning("could not close issue %s after 3 attempts: %v", issueID, closeErr)
-				}
-			}
+
+			sourceTransition = beads.SourceTransitionDirectDone
+			sourceTransitionReason = fmt.Sprintf("Direct merge to %s (convoy strategy)", target)
 
 			goto notifyWitness
 		}
@@ -999,39 +966,15 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 					}
 				}
 
-				// No-merge work never goes through the refinery, so close the source bead
-				// here after notifying the dispatcher. Otherwise hooked work remains open.
+				// No-merge work never goes through the refinery, so transition the source
+				// after notifying the dispatcher. Otherwise hooked work remains open.
 				if issueID != "" {
-					canCloseIssue := true
-					if attachmentFields.AttachedMolecule != "" {
-						if n := closeDescendants(bd, attachmentFields.AttachedMolecule); n > 0 {
-							fmt.Fprintf(os.Stderr, "Closed %d molecule step(s) for %s\n", n, attachmentFields.AttachedMolecule)
-						}
-						if closeErr := forceCloseIssueWithRetry(
-							bd.ForceCloseWithReason,
-							attachmentFields.AttachedMolecule,
-							"done",
-							"Attached molecule %s closed",
-						); closeErr != nil && !errors.Is(closeErr, beads.ErrNotFound) {
-							style.PrintWarning("could not close attached molecule %s after 3 attempts: %v", attachmentFields.AttachedMolecule, closeErr)
-							canCloseIssue = false
-						}
-					}
-
 					closeReason := "No-merge work completed; merge queue skipped"
 					if prURL != "" {
 						closeReason = fmt.Sprintf("%s\npr_url: %s", closeReason, prURL)
 					}
-					if canCloseIssue {
-						if closeErr := forceCloseIssueWithRetry(
-							bd.ForceCloseWithReason,
-							issueID,
-							closeReason,
-							"Issue %s closed (no-merge)",
-						); closeErr != nil {
-							style.PrintWarning("could not close issue %s after 3 attempts: %v (issue may be left HOOKED)", issueID, closeErr)
-						}
-					}
+					sourceTransition = beads.SourceTransitionDirectDone
+					sourceTransitionReason = closeReason
 				}
 
 				// Skip MR creation, go to witness notification
@@ -1072,25 +1015,9 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 				}
 				fmt.Printf("%s Branch pushed directly to %s\n", style.Bold.Render("✓"), target)
 
-				// Close the issue directly — refinery won't process it.
-				if issueID != "" {
-					var closeErr error
-					for attempt := 1; attempt <= 3; attempt++ {
-						closeErr = bd.ForceCloseWithReason(
-							fmt.Sprintf("Direct merge to %s (convoy strategy, late detection)", target), issueID)
-						if closeErr == nil {
-							fmt.Printf("%s Issue %s closed (direct merge)\n", style.Bold.Render("✓"), issueID)
-							break
-						}
-						if attempt < 3 {
-							style.PrintWarning("close attempt %d/3 failed: %v (retrying in %ds)", attempt, closeErr, attempt*2)
-							time.Sleep(time.Duration(attempt*2) * time.Second)
-						}
-					}
-					if closeErr != nil {
-						style.PrintWarning("could not close issue %s after 3 attempts: %v", issueID, closeErr)
-					}
-				}
+
+				sourceTransition = beads.SourceTransitionDirectDone
+				sourceTransitionReason = fmt.Sprintf("Direct merge to %s (convoy strategy, late detection)", target)
 
 				goto notifyWitness
 			}
@@ -1297,7 +1224,8 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 			writeDoneCheckpoint(cpBd, agentBeadID, CheckpointMRCreated, mrID)
 		}
 
-	afterMR:
+		afterMR:
+		sourceTransition = beads.SourceTransitionDoneSubmittedMR
 		fmt.Printf("  Source: %s\n", branch)
 		fmt.Printf("  Target: %s\n", target)
 		fmt.Printf("  Issue: %s\n", issueID)
@@ -1317,8 +1245,49 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 	}
 
 notifyWitness:
+	if sourceTransition == "" {
+		switch exitType {
+		case ExitCompleted:
+			if pushFailed || mrFailed {
+				sourceTransition = beads.SourceTransitionRecoveryReset
+			} else if mrID != "" {
+				sourceTransition = beads.SourceTransitionDoneSubmittedMR
+			} else {
+				sourceTransition = beads.SourceTransitionDirectDone
+			}
+		case ExitDeferred:
+			sourceTransition = beads.SourceTransitionDoneDeferred
+		case ExitEscalated:
+			sourceTransition = beads.SourceTransitionDoneEscalated
+		}
+	}
+	if issueID != "" && sourceTransition != "" {
+		commitSHA, _ := g.Rev("HEAD")
+		transitionResult, transitionErr := beads.New(cwd).TransitionSourceIssue(beads.SourceTransitionOptions{
+			Transition:    sourceTransition,
+			SourceIssueID: issueID,
+			Assignee:      sender,
+			Reason:        sourceTransitionReason,
+			MRID:          mrID,
+			TargetBranch:  target,
+			CommitSHA:     commitSHA,
+		})
+		if transitionErr != nil {
+			style.PrintWarning("source transition %s failed for %s: %v", sourceTransition, issueID, transitionErr)
+		} else if transitionResult != nil {
+			switch {
+			case transitionResult.SourceClosed:
+				fmt.Printf("%s Issue %s closed (%s)\n", style.Bold.Render("✓"), issueID, sourceTransition)
+			case transitionResult.SourceUpdated:
+				fmt.Printf("%s Issue %s transitioned (%s)\n", style.Bold.Render("✓"), issueID, sourceTransition)
+			case transitionResult.SourceAlreadyTerminal:
+				fmt.Printf("%s Issue %s already terminal (%s)\n", style.Dim.Render("○"), issueID, sourceTransition)
+			}
+		}
+	}
+
 	// Nudge refinery — MR bead is already on main (transaction-based shared main).
-	if mrID != "" {
+	if mrID != "" && !pushFailed && !mrFailed {
 		nudgeRefinery(rigName, "MERGE_READY received - check inbox for pending work")
 	}
 
@@ -1360,7 +1329,7 @@ notifyWitness:
 	}
 
 	// Update agent bead state (ZFC: self-report completion)
-	updateAgentStateOnDone(cwd, townRoot, exitType, issueID)
+	updateAgentStateOnDone(cwd, townRoot, exitType, issueID, pushFailed || mrFailed)
 
 	// Nudge witness only after hook/cleanup state is updated. Otherwise witness can
 	// evaluate slot availability against stale hook_bead or cleanup_status and emit
@@ -1701,7 +1670,7 @@ func clearDoneCheckpoints(bd *beads.Beads, agentBeadID string) {
 // BUG FIX (hq-3xaxy): This function must be resilient to working directory deletion.
 // If the polecat's worktree is deleted before gt done finishes, we use env vars as fallback.
 // All errors are warnings, not failures - gt done must complete even if bead ops fail.
-func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) {
+func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string, completionFailed bool) {
 	// Get role context - try multiple sources for resilience
 	roleInfo, err := GetRoleWithContext(cwd, townRoot)
 	if err != nil {
@@ -1761,84 +1730,9 @@ func updateAgentStateOnDone(cwd, townRoot, exitType, issueID string) {
 	// "issue not found". See beads.ForAgentBead docstring for details.
 	agentBd := bd.ForAgentBead()
 
-	// Find the hooked bead to close. Use issueID directly instead of reading
-	// agent bead's hook_bead slot (hq-l6mm5: direct bead tracking).
-	hookedBeadID := issueID
-	if hookedBeadID == "" {
-		// Fallback: query for hooked beads assigned to this agent
-		agentID := roleInfo.ActorString()
-		if found := findHookedBeadForAgent(bd, agentID); found != "" {
-			hookedBeadID = found
-		}
-	}
-
-	// Workflow step beads (*-wfs-*) are ephemeral formula steps managed by the workflow
-	// engine. For these, DEFERRED means "step complete, no code commits" not "work
-	// paused for resumption". Close them on DEFERRED so the convoy can advance.
-	isWorkflowStep := strings.Contains(hookedBeadID, "-wfs-")
-
-	if hookedBeadID != "" && (exitType != ExitDeferred || isWorkflowStep) {
-		// BUG FIX (gt-pftz): Close hooked bead unless already terminal (closed/tombstone).
-		// Previously checked hookedBead.Status == StatusHooked, but polecats update
-		// their work bead to in_progress during work. The exact-match check caused
-		// gt done to skip closing the bead, leaving it as unassigned open work after
-		// the hook was cleared — triggering infinite dispatch loops.
-		//
-		// DEFERRED exits preserve the bead: work is paused, not done. The bead
-		// stays open/in_progress so it can be resumed on the next session.
-		// Exception: workflow step beads (*-wfs-*) are always closed — see above.
-		if hookedBead, err := bd.Show(hookedBeadID); err == nil && !beads.IssueStatus(hookedBead.Status).IsTerminal() {
-			// Guard: never close a rig identity bead. Polecats dispatched with the
-			// rig bead as their hook (via mol-polecat-work) must not close permanent
-			// infrastructure. Skip close and fall through to idle state update.
-			if beads.HasLabel(hookedBead, "gt:rig") {
-				fmt.Fprintf(os.Stderr, "Note: hooked bead %s is a rig identity bead (gt:rig) — skipping close\n", hookedBeadID)
-				goto doneStateUpdate
-			}
-
-			// BUG FIX: Close attached molecule (wisp) BEFORE closing hooked bead.
-			// When using formula-on-bead (gt sling formula --on bead), the base bead
-			// has attached_molecule pointing to the wisp. Without this fix, gt done
-			// only closed the hooked bead, leaving the wisp orphaned.
-			// Order matters: wisp closes -> unblocks base bead -> base bead closes.
-			attachment := beads.ParseAttachmentFields(hookedBead)
-			if attachment != nil && attachment.AttachedMolecule != "" {
-				// Close molecule step descendants before closing the wisp root.
-				// bd close doesn't cascade — without this, open/in_progress steps
-				// from the molecule stay stuck forever after gt done completes.
-				// Order: step children -> wisp root -> base bead.
-				if n := closeDescendants(bd, attachment.AttachedMolecule); n > 0 {
-					fmt.Fprintf(os.Stderr, "Closed %d molecule step(s) for %s\n", n, attachment.AttachedMolecule)
-				}
-
-				// Close the wisp root with --force and audit reason.
-				// ForceCloseWithReason handles any status (hooked, open, in_progress)
-				// and records the reason + session for attribution.
-				// Same pattern as gt mol burn/squash (#1879).
-				if closeErr := bd.ForceCloseWithReason("done", attachment.AttachedMolecule); closeErr != nil {
-					if !errors.Is(closeErr, beads.ErrNotFound) {
-						fmt.Fprintf(os.Stderr, "Warning: couldn't close attached molecule %s: %v\n", attachment.AttachedMolecule, closeErr)
-						// Don't try to close hookedBeadID - it may still be blocked.
-						// But DO clear hooks and update agent state (goto doneStateUpdate)
-						// so the polecat isn't stuck in 'working' state (za-o9e).
-						goto doneStateUpdate
-					}
-					// Not found = already burned/deleted by another path, continue
-				}
-			}
-
-			// Acceptance criteria gate: skip close if criteria are unchecked.
-			if unchecked := beads.HasUncheckedCriteria(hookedBead); unchecked > 0 {
-				style.PrintWarning("hooked bead %s has %d unchecked acceptance criteria — skipping close", hookedBeadID, unchecked)
-				fmt.Fprintf(os.Stderr, "  The bead will remain open for witness/mayor review.\n")
-			} else if err := bd.Close(hookedBeadID); err != nil {
-				// Non-fatal: warn but continue
-				fmt.Fprintf(os.Stderr, "Warning: couldn't close hooked bead %s: %v\n", hookedBeadID, err)
-			}
-		}
-	}
-
-doneStateUpdate:
+	// Source issue lifecycle is handled by beads.TransitionSourceIssue before this
+	// function runs. This function only updates the agent bead so gt done cannot
+	// accidentally close MR-backed source work before refinery success.
 	// Clear hook_bead on the agent bead (gt-qbh). The hq-l6mm5 refactor made
 	// SetHookBead/ClearHookBead no-ops, but the witness still reads the
 	// hook_bead field from the agent bead snapshot. If the hooked bead is a
@@ -1862,7 +1756,7 @@ doneStateUpdate:
 	// for audit purposes and anomaly detection by witness patrol.
 	// Exception: ESCALATED exits use "stuck" — the polecat needs help.
 	doneState := "idle"
-	if exitType == ExitEscalated {
+	if exitType == ExitEscalated || completionFailed {
 		doneState = "stuck"
 	}
 	// Use UpdateAgentState to sync both column and description (gt-ulom).

@@ -253,9 +253,11 @@ func ClassifyMessage(subject string) ProtocolType {
 //
 //	Exit: COMPLETED|ESCALATED|DEFERRED|PHASE_COMPLETE
 //	Issue: <issue-id>
-//	MR: <mr-id>
-//	Gate: <gate-id>
-//	Branch: <branch>
+	//	MR: <mr-id>
+	//	Gate: <gate-id>
+	//	Branch: <branch>
+	//	MRFailed: true|false
+	//	PushFailed: true|false
 func ParsePolecatDone(subject, body string) (*PolecatDonePayload, error) {
 	matches := PatternPolecatDone.FindStringSubmatch(subject)
 	if len(matches) < 2 {
@@ -281,6 +283,8 @@ func ParsePolecatDone(subject, body string) (*PolecatDonePayload, error) {
 			payload.Branch = strings.TrimSpace(strings.TrimPrefix(line, "Branch:"))
 		} else if strings.HasPrefix(line, "MRFailed:") {
 			payload.MRFailed = strings.TrimSpace(strings.TrimPrefix(line, "MRFailed:")) == "true"
+		} else if strings.HasPrefix(line, "PushFailed:") {
+			payload.PushFailed = strings.TrimSpace(strings.TrimPrefix(line, "PushFailed:")) == "true"
 		}
 	}
 

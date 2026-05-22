@@ -172,6 +172,13 @@ func HandlePolecatDone(bd *BdCli, workDir, rigName string, msg *mail.Message, ro
 		return result
 	}
 
+	if payload.PushFailed || payload.MRFailed {
+		result.Handled = true
+		result.Action = fmt.Sprintf("submission-failed-recovery-needed for %s (branch=%s issue=%s push_failed=%t mr_failed=%t)",
+			payload.PolecatName, payload.Branch, payload.IssueID, payload.PushFailed, payload.MRFailed)
+		return result
+	}
+
 	hasPendingMR := payload.MRID != ""
 
 	// When Exit==COMPLETED but MRID is empty and MR creation didn't explicitly
@@ -239,15 +246,15 @@ func HandlePolecatDoneFromBead(bd *BdCli, workDir, rigName, polecatName string, 
 		return result
 	}
 
-	// Push failed: branch never reached origin (gas-556). Report recovery needed.
-	if payload.PushFailed {
+	// Submission failed: branch or MR never reached the merge queue. Report recovery needed.
+	if payload.PushFailed || payload.MRFailed {
 		result.Handled = true
-		result.Action = fmt.Sprintf("push-failed-recovery-needed for %s (branch=%s issue=%s) — branch not on origin, worktree may be at risk",
-			polecatName, payload.Branch, payload.IssueID)
+		result.Action = fmt.Sprintf("submission-failed-recovery-needed for %s (branch=%s issue=%s push_failed=%t mr_failed=%t)",
+			polecatName, payload.Branch, payload.IssueID, payload.PushFailed, payload.MRFailed)
 		townRoot, _ := workspace.Find(workDir)
 		if townRoot != "" {
-			mayorMsg := fmt.Sprintf("PUSH_FAILED: polecat=%s branch=%s issue=%s — branch not on origin, possible work loss",
-				polecatName, payload.Branch, payload.IssueID)
+			mayorMsg := fmt.Sprintf("SUBMISSION_FAILED: polecat=%s branch=%s issue=%s push_failed=%t mr_failed=%t",
+				polecatName, payload.Branch, payload.IssueID, payload.PushFailed, payload.MRFailed)
 			mayorSession := session.MayorSessionName()
 			t := tmux.NewTmux()
 			if running, err := t.HasSession(mayorSession); err == nil && running {
@@ -2078,17 +2085,16 @@ func processDiscoveredCompletion(bd *BdCli, workDir, rigName string, payload *Po
 		return
 	}
 
-	// Push failed: branch never reached origin. Work is committed locally only.
-	// The polecat's worktree may be in /tmp and lost on reboot. Escalate so the
-	// witness agent can investigate and trigger recovery (gas-556).
-	if payload.PushFailed {
-		discovery.Action = fmt.Sprintf("push-failed-recovery-needed (branch=%s issue=%s) — branch not on origin, worktree may be at risk",
-			payload.Branch, payload.IssueID)
+	// Submission failed: branch or MR never reached the merge queue. Escalate so
+	// witness/mayor can recover without treating the slot as normally open.
+	if payload.PushFailed || payload.MRFailed {
+		discovery.Action = fmt.Sprintf("submission-failed-recovery-needed (branch=%s issue=%s push_failed=%t mr_failed=%t)",
+			payload.Branch, payload.IssueID, payload.PushFailed, payload.MRFailed)
 		// Notify mayor so a new polecat can be dispatched if work is lost.
 		townRoot, _ := workspace.Find(workDir)
 		if townRoot != "" {
-			mayorMsg := fmt.Sprintf("PUSH_FAILED: polecat=%s branch=%s issue=%s — branch not on origin, possible work loss",
-				payload.PolecatName, payload.Branch, payload.IssueID)
+			mayorMsg := fmt.Sprintf("SUBMISSION_FAILED: polecat=%s branch=%s issue=%s push_failed=%t mr_failed=%t",
+				payload.PolecatName, payload.Branch, payload.IssueID, payload.PushFailed, payload.MRFailed)
 			mayorSession := session.MayorSessionName()
 			t := tmux.NewTmux()
 			if running, err := t.HasSession(mayorSession); err == nil && running {
