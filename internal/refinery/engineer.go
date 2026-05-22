@@ -1205,26 +1205,34 @@ func (e *Engineer) HandleMRInfoSuccess(mr *MRInfo, result ProcessResult) {
 
 	// Update and close the MR bead
 	if mr.ID != "" {
+		mrAlreadyClosed := false
 		// Fetch the MR bead to update its fields
 		mrBead, err := e.beads.Show(mr.ID)
 		if err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to fetch MR bead %s: %v\n", mr.ID, err)
 		} else {
+			mrAlreadyClosed = mrBead.Status == "closed"
 			// Update MR with merge_commit SHA and close_reason
 			mrFields := beads.ParseMRFields(mrBead)
 			if mrFields == nil {
 				mrFields = &beads.MRFields{}
 			}
-			mrFields.MergeCommit = result.MergeCommit
-			mrFields.CloseReason = "merged"
-			newDesc := beads.SetMRFields(mrBead, mrFields)
-			if err := e.beads.Update(mr.ID, beads.UpdateOptions{Description: &newDesc}); err != nil {
-				_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to update MR %s with merge commit: %v\n", mr.ID, err)
+			if mrAlreadyClosed {
+				_, _ = fmt.Fprintf(e.output, "[Engineer] MR bead already closed: %s\n", mr.ID)
+			} else {
+				mrFields.MergeCommit = result.MergeCommit
+				mrFields.CloseReason = "merged"
+				newDesc := beads.SetMRFields(mrBead, mrFields)
+				if err := e.beads.Update(mr.ID, beads.UpdateOptions{Description: &newDesc}); err != nil {
+					_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to update MR %s with merge commit: %v\n", mr.ID, err)
+				}
 			}
 		}
 
 		// Close MR bead with reason 'merged'
-		if err := e.beads.CloseWithReason("merged", mr.ID); err != nil {
+		if mrAlreadyClosed {
+			// Already terminal: post-merge cleanup may be re-run after a crash.
+		} else if err := e.beads.CloseWithReason("merged", mr.ID); err != nil {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Warning: failed to close MR %s: %v\n", mr.ID, err)
 		} else {
 			_, _ = fmt.Fprintf(e.output, "[Engineer] Closed MR bead: %s\n", mr.ID)

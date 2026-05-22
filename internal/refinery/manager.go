@@ -446,7 +446,7 @@ func (m *Manager) issueToMR(issue *beads.Issue) *MergeRequest {
 		return &MergeRequest{
 			ID:           issue.ID,
 			IssueID:      issue.ID,
-			Status:       MROpen,
+			Status:       mrStatusFromIssue(issue),
 			CreatedAt:    parseTime(issue.CreatedAt),
 			TargetBranch: defaultBranch,
 		}
@@ -465,9 +465,20 @@ func (m *Manager) issueToMR(issue *beads.Issue) *MergeRequest {
 		IssueID:      fields.SourceIssue,
 		TargetBranch: targetResult.Branch,
 		MergeCommit:  fields.MergeCommit,
-		Status:       MROpen,
+		Status:       mrStatusFromIssue(issue),
+		CloseReason:  CloseReason(fields.CloseReason),
 		CreatedAt:    parseTime(issue.CreatedAt),
 	}
+}
+
+func mrStatusFromIssue(issue *beads.Issue) MRStatus {
+	if issue != nil && issue.Status == string(MRClosed) {
+		return MRClosed
+	}
+	if issue != nil && issue.Status == string(MRInProgress) {
+		return MRInProgress
+	}
+	return MROpen
 }
 
 // parseTime parses a time string, returning zero time on error.
@@ -538,6 +549,30 @@ func (m *Manager) FindMR(idOrBranch string) (*MergeRequest, error) {
 	return nil, ErrMRNotFound
 }
 
+func (m *Manager) FindMRIncludingClosed(idOrBranch string) (*MergeRequest, error) {
+	b := beads.New(m.rig.BeadsPath())
+	issues, err := b.ListMergeRequests(beads.ListOptions{
+		Label:    "gt:merge-request",
+		Status:   "all",
+		Priority: -1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("querying merge requests from beads: %w", err)
+	}
+
+	for _, issue := range issues {
+		mr := m.issueToMR(issue)
+		if mr == nil {
+			continue
+		}
+		if mr.ID == idOrBranch || mr.Branch == idOrBranch || constants.BranchPolecatPrefix+idOrBranch == mr.Branch || strings.HasPrefix(mr.ID, idOrBranch) {
+			return mr, nil
+		}
+	}
+
+	return nil, ErrMRNotFound
+}
+
 // Retry is deprecated - the Refinery agent handles retry logic autonomously.
 // ZFC-compliant: no state file, agent uses beads issue status.
 // The agent will automatically retry failed MRs in its patrol cycle.
@@ -601,7 +636,7 @@ type PostMergeResult struct {
 // It closes the MR bead and its source issue. Branch deletion is handled
 // by the caller since the Manager doesn't have git access.
 func (m *Manager) PostMerge(idOrBranch string) (*PostMergeResult, error) {
-	mr, err := m.FindMR(idOrBranch)
+	mr, err := m.FindMRIncludingClosed(idOrBranch)
 	if err != nil {
 		return nil, err
 	}

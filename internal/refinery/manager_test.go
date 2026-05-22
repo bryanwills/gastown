@@ -110,14 +110,14 @@ func TestManager_Queue_FiltersClosedMergeRequests(t *testing.T) {
 	}
 
 	openIssue, err := b.Create(beads.CreateOptions{
-		Title: "Open MR",
+		Title:  "Open MR",
 		Labels: []string{"gt:merge-request"},
 	})
 	if err != nil {
 		t.Fatalf("create open merge-request issue: %v", err)
 	}
 	closedIssue, err := b.Create(beads.CreateOptions{
-		Title: "Closed MR",
+		Title:  "Closed MR",
 		Labels: []string{"gt:merge-request"},
 	})
 	if err != nil {
@@ -226,7 +226,7 @@ func TestManager_PostMerge_ClosesMRAndSourceIssue(t *testing.T) {
 
 	// Create a source issue
 	srcIssue, err := b.Create(beads.CreateOptions{
-		Title: "Implement feature X",
+		Title:  "Implement feature X",
 		Labels: []string{"gt:task"},
 	})
 	if err != nil {
@@ -287,10 +287,50 @@ func TestManager_PostMerge_AlreadyClosedMR(t *testing.T) {
 		t.Fatalf("close MR issue: %v", err)
 	}
 
-	// PostMerge should fail since MR is already closed and won't be in queue
-	_, err = mgr.PostMerge(mrIssue.ID)
-	if err == nil {
-		t.Error("PostMerge() expected error for already-closed MR")
+	result, err := mgr.PostMerge(mrIssue.ID)
+	if err != nil {
+		t.Fatalf("PostMerge() error for already-closed MR: %v", err)
+	}
+	if !result.MRClosed {
+		t.Error("PostMerge() MRClosed = false, want true for already-closed MR")
+	}
+}
+
+func TestManager_PostMerge_AlreadyClosedSourceIssue(t *testing.T) {
+	mgr, rigPath := setupTestManager(t)
+	testutil.RequireDoltContainer(t)
+	port, _ := strconv.Atoi(testutil.DoltContainerPort())
+	b := beads.NewIsolatedWithPort(rigPath, port)
+	if err := b.Init("gt"); err != nil {
+		t.Skipf("bd init unavailable: %v", err)
+	}
+
+	srcIssue, err := b.Create(beads.CreateOptions{Title: "Already done", Labels: []string{"gt:task"}})
+	if err != nil {
+		t.Fatalf("create source issue: %v", err)
+	}
+	if err := b.Close(srcIssue.ID); err != nil {
+		t.Fatalf("close source issue: %v", err)
+	}
+
+	mrIssue, err := b.Create(beads.CreateOptions{
+		Title:       "MR for already done source",
+		Labels:      []string{"gt:merge-request"},
+		Description: "branch: polecat/test/gt-done\nsource_issue: " + srcIssue.ID + "\nworker: test\ntarget: main",
+	})
+	if err != nil {
+		t.Fatalf("create MR issue: %v", err)
+	}
+
+	result, err := mgr.PostMerge(mrIssue.ID)
+	if err != nil {
+		t.Fatalf("PostMerge() error: %v", err)
+	}
+	if !result.MRClosed {
+		t.Error("PostMerge() MRClosed = false, want true")
+	}
+	if !result.SourceIssueClosed {
+		t.Error("PostMerge() SourceIssueClosed = false, want true for already-closed source")
 	}
 }
 

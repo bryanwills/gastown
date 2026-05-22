@@ -2080,6 +2080,85 @@ func TestNotifyRefineryMergeReady_EmitsChannelEvent(t *testing.T) {
 	}
 }
 
+func TestCompletionPendingMR_DedupsCleanupWispAndRefineryWake(t *testing.T) {
+	townRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(townRoot, "mayor"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(townRoot, "mayor", "town.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GT_TEST_NUDGE_LOG", filepath.Join(t.TempDir(), "nudge.log"))
+
+	created := false
+	createCalls := 0
+	bd, mock := mockBd(
+		func(args []string) (string, error) {
+			args = stripMockBdFlags(args)
+			if len(args) == 0 {
+				return "[]", nil
+			}
+			switch args[0] {
+			case "list":
+				if created {
+					return `[{"id":"gt-wisp-1"}]`, nil
+				}
+				return "[]", nil
+			case "create":
+				created = true
+				createCalls++
+				return `{"id":"gt-wisp-1"}`, nil
+			case "close":
+				return "{}", nil
+			}
+			return "[]", nil
+		},
+		func(args []string) error { return nil },
+	)
+	payload := &PolecatDonePayload{
+		PolecatName: "nux",
+		Exit:        "ESCALATED",
+		IssueID:     "gt-work-1",
+		MRID:        "gt-mr-1",
+		Branch:      "polecat/nux/gt-work-1@abc",
+	}
+
+	result := handlePolecatDonePendingMR(bd, townRoot, "dashboard", payload, &HandlerResult{})
+	if result.Error != nil {
+		t.Fatalf("handlePolecatDonePendingMR error: %v", result.Error)
+	}
+	discovery := &CompletionDiscovery{}
+	processDiscoveredCompletion(bd, townRoot, "dashboard", payload, discovery)
+	if discovery.Error != nil {
+		t.Fatalf("processDiscoveredCompletion error: %v", discovery.Error)
+	}
+
+	if createCalls != 1 {
+		t.Fatalf("cleanup wisp creates = %d, want 1; calls:\n%s", createCalls, strings.Join(mock.calls, "\n"))
+	}
+	log := strings.Join(mock.calls, "\n")
+	if !strings.Contains(log, "mr:gt-mr-1") || !strings.Contains(log, "source:gt-work-1") || !strings.Contains(log, "branch:polecat/nux/gt-work-1@abc") {
+		t.Fatalf("cleanup wisp was not keyed by MR/source/branch; calls:\n%s", log)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(townRoot, "events", "refinery"))
+	if err != nil {
+		t.Fatalf("reading refinery events: %v", err)
+	}
+	eventCount := 0
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".event") {
+			eventCount++
+		}
+	}
+	if eventCount != 1 {
+		t.Fatalf("refinery wake events = %d, want 1", eventCount)
+	}
+	if !strings.Contains(discovery.Action, "already-tracked") {
+		t.Fatalf("duplicate discovery action = %q, want already tracked", discovery.Action)
+	}
+}
+
 // TestCherryHasUnmergedCommits covers the git-cherry output parser used by
 // verifyBranchAlreadyMerged (aa-apw).
 func TestCherryHasUnmergedCommits(t *testing.T) {
