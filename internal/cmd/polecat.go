@@ -1188,7 +1188,7 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 				State:          polecat.StateIdle,
 				HookBead:       hookBead,
 				CleanupStatus:  effectiveCleanupStatus,
-				ActiveMR:       fields.ActiveMR,
+				ActiveMR:       status.ActiveMR,
 				ActiveMRBlocks: activeMRBlocks,
 				PushFailed:     fields.PushFailed,
 				MRFailed:       fields.MRFailed,
