@@ -1783,7 +1783,6 @@ func TestProcessDiscoveredCompletion_NoMR(t *testing.T) {
 	payload := &PolecatDonePayload{
 		PolecatName: "nux",
 		Exit:        "COMPLETED",
-		MRFailed:    true, // Prevents fallback MR lookup
 	}
 	discovery := &CompletionDiscovery{}
 	processDiscoveredCompletion(DefaultBdCli(), "/tmp", "testrig", payload, discovery)
