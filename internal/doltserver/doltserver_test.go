@@ -171,6 +171,111 @@ func TestReadSQLServerInfoRejectsMalformedContent(t *testing.T) {
 	}
 }
 
+func TestResolveLiveServerPrefersVerifiedSQLInfoOverLegacyPidfile(t *testing.T) {
+	townRoot := t.TempDir()
+	dataDir := filepath.Join(townRoot, ".dolt-data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "dolt.pid"), []byte("111\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	config := &Config{TownRoot: townRoot, Port: 3307, DataDir: dataDir, PidFile: filepath.Join(townRoot, "daemon", "dolt.pid")}
+	info := &SQLServerInfo{PID: 222, Port: 3307, Path: filepath.Join(dataDir, ".dolt", "sql-server.info")}
+	status, err := resolveLiveServerWithConfig(townRoot, config, fakeLiveServerProbe(info, nil, map[int]bool{222: true}, 222, true, map[int]bool{222: true}))
+	if err != nil {
+		t.Fatalf("resolveLiveServerWithConfig: %v", err)
+	}
+	if !status.Running || status.PID != 222 || status.Source != "sql-server.info" {
+		t.Fatalf("status = %+v, want live PID 222 from sql-server.info", status)
+	}
+}
+
+func TestResolveLiveServerFallsBackToPortOwnerWhenMetadataMismatches(t *testing.T) {
+	townRoot := t.TempDir()
+	daemonDir := filepath.Join(townRoot, "daemon")
+	if err := os.MkdirAll(daemonDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(daemonDir, "dolt.pid")
+	if err := os.WriteFile(pidFile, []byte("111\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	config := &Config{TownRoot: townRoot, Port: 3307, DataDir: filepath.Join(townRoot, ".dolt-data"), PidFile: pidFile}
+	state := &State{PID: 222, Port: 3307, DataDir: config.DataDir}
+	status, err := resolveLiveServerWithConfig(townRoot, config, fakeLiveServerProbe(nil, state, map[int]bool{111: false, 222: true, 333: true}, 333, true, map[int]bool{222: true, 333: true}))
+	if err != nil {
+		t.Fatalf("resolveLiveServerWithConfig: %v", err)
+	}
+	if !status.Running || status.PID != 333 || status.Source != "port-owner" {
+		t.Fatalf("status = %+v, want live PID 333 from port-owner", status)
+	}
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Fatalf("stale daemon pidfile should be removed, stat err = %v", err)
+	}
+}
+
+func TestResolveLiveServerUsesDaemonStateWhenVerified(t *testing.T) {
+	townRoot := t.TempDir()
+	config := &Config{TownRoot: townRoot, Port: 3307, DataDir: filepath.Join(townRoot, ".dolt-data"), PidFile: filepath.Join(townRoot, "daemon", "dolt.pid")}
+	info := &SQLServerInfo{PID: 222, Port: 3308, Path: "wrong-port-info"}
+	state := &State{PID: 333, Port: 3307, DataDir: config.DataDir, Databases: []string{"gastown"}}
+
+	status, err := resolveLiveServerWithConfig(townRoot, config, fakeLiveServerProbe(info, state, map[int]bool{222: true, 333: true}, 333, true, map[int]bool{222: true, 333: true}))
+	if err != nil {
+		t.Fatalf("resolveLiveServerWithConfig: %v", err)
+	}
+	if !status.Running || status.PID != 333 || status.Source != "daemon-state" || len(status.Databases) != 1 {
+		t.Fatalf("status = %+v, want verified daemon-state", status)
+	}
+}
+
+func TestResolveLiveServerDoesNotTrustPidfileWithoutVerification(t *testing.T) {
+	townRoot := t.TempDir()
+	daemonDir := filepath.Join(townRoot, "daemon")
+	if err := os.MkdirAll(daemonDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(daemonDir, "dolt.pid")
+	if err := os.WriteFile(pidFile, []byte("444\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	config := &Config{TownRoot: townRoot, Port: 3307, DataDir: filepath.Join(townRoot, ".dolt-data"), PidFile: pidFile}
+	status, err := resolveLiveServerWithConfig(townRoot, config, fakeLiveServerProbe(nil, nil, map[int]bool{444: true}, 0, true, map[int]bool{444: false}))
+	if err != nil {
+		t.Fatalf("resolveLiveServerWithConfig: %v", err)
+	}
+	if !status.Running || status.PID != 0 || status.Source != "tcp-reachable" {
+		t.Fatalf("status = %+v, want TCP-only live status after rejecting pidfile", status)
+	}
+}
+
+func fakeLiveServerProbe(info *SQLServerInfo, state *State, alive map[int]bool, listenerPID int, tcp bool, matches map[int]bool) liveServerProbe {
+	return liveServerProbe{
+		processAlive: func(pid int) bool { return alive[pid] },
+		listenerPID:  func(int) int { return listenerPID },
+		tcpReachable: func(string, int) bool { return tcp },
+		processMatchesTown: func(pid int) bool {
+			return matches[pid]
+		},
+		readSQLInfo: func(*Config) (*SQLServerInfo, error) {
+			if info == nil {
+				return nil, os.ErrNotExist
+			}
+			return info, nil
+		},
+		loadState: func(string) (*State, error) {
+			if state == nil {
+				return &State{}, nil
+			}
+			return state, nil
+		},
+	}
+}
+
 func TestDoltProcessMatchesTownPaths(t *testing.T) {
 	expectedDir := "/town/.dolt-data"
 

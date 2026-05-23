@@ -620,15 +620,15 @@ func runDoltStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Port: %d\n", live.Port)
 		fmt.Printf("  Data dir: %s\n", live.DataDir)
 		if len(live.Databases) > 0 {
-				owners := doltserver.CollectDatabaseOwners(townRoot)
-				fmt.Printf("  Databases:\n")
-				for _, db := range live.Databases {
-					if owner, ok := owners[db]; ok {
-						fmt.Printf("    - %-20s (%s)\n", db, owner)
-					} else {
-						fmt.Printf("    - %s\n", db)
-					}
+			owners := doltserver.CollectDatabaseOwners(townRoot)
+			fmt.Printf("  Databases:\n")
+			for _, db := range live.Databases {
+				if owner, ok := owners[db]; ok {
+					fmt.Printf("    - %-20s (%s)\n", db, owner)
+				} else {
+					fmt.Printf("    - %s\n", db)
 				}
+			}
 		}
 		fmt.Printf("  Connection: %s\n", doltserver.GetConnectionString(townRoot))
 
