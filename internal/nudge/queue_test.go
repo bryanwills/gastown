@@ -283,6 +283,34 @@ func TestEnqueueDoesNotSuppressUrgentDoltDuplicate(t *testing.T) {
 	}
 }
 
+func TestRequeueBypassesRoutineDuplicateSuppression(t *testing.T) {
+	townRoot := t.TempDir()
+	session := "gt-test-requeue-routine"
+	msg := "SLOT_OPEN: gastown/ghoul completed (exit=COMPLETED) - slot available"
+
+	if err := Enqueue(townRoot, session, QueuedNudge{Sender: "witness", Message: msg}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	nudges, err := Drain(townRoot, session)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if len(nudges) != 1 {
+		t.Fatalf("Drain got %d nudges, want 1", len(nudges))
+	}
+
+	if err := Requeue(townRoot, session, nudges); err != nil {
+		t.Fatalf("Requeue: %v", err)
+	}
+	nudges, err = Drain(townRoot, session)
+	if err != nil {
+		t.Fatalf("second Drain: %v", err)
+	}
+	if len(nudges) != 1 {
+		t.Fatalf("second Drain got %d nudges, want 1 requeued routine nudge", len(nudges))
+	}
+}
+
 func TestPendingNonexistentDir(t *testing.T) {
 	count, err := Pending("/nonexistent/path", "session")
 	if err != nil {

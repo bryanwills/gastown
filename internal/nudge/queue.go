@@ -97,13 +97,17 @@ func randomSuffix() string {
 // The nudge will be picked up by the agent's hook at the next turn boundary.
 // Returns an error if the queue is full (MaxQueueDepth reached).
 func Enqueue(townRoot, session string, nudge QueuedNudge) error {
+	return enqueue(townRoot, session, nudge, true)
+}
+
+func enqueue(townRoot, session string, nudge QueuedNudge, suppressRoutineDuplicates bool) error {
 	dir := queueDir(townRoot, session)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("creating nudge queue dir: %w", err)
 	}
 
 	nudge = normalizeQueuedNudge(nudge)
-	if shouldSuppressRoutineDuplicate(townRoot, session, nudge) {
+	if suppressRoutineDuplicates && shouldSuppressRoutineDuplicate(townRoot, session, nudge) {
 		return nil
 	}
 
@@ -155,7 +159,7 @@ func normalizeQueuedNudge(n QueuedNudge) QueuedNudge {
 	if n.Kind == "" {
 		n.Kind = deriveNudgeKind(n.Message)
 	}
-	if n.ThreadID == "" && n.Kind != "" {
+	if n.ThreadID == "" && isSuppressibleRoutineKind(n.Kind) {
 		n.ThreadID = routineThreadID(n.Message)
 	}
 	return n
@@ -222,6 +226,9 @@ func shouldSuppressRoutineDuplicate(townRoot, session string, n QueuedNudge) boo
 	if !isRoutineNudge(n) {
 		return false
 	}
+	if !isSuppressibleRoutineKind(n.Kind) {
+		return false
+	}
 	key := actionabilityKey(n)
 	if key == "" {
 		return false
@@ -244,6 +251,18 @@ func shouldSuppressRoutineDuplicate(townRoot, session string, n QueuedNudge) boo
 	state[key] = now
 	storeRecentRoutine(townRoot, session, state)
 	return false
+}
+
+func isSuppressibleRoutineKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "slot_open", "slot-open", "slot_blocked", "slot-blocked",
+		"merge_ready", "merge-ready", "merge-queue",
+		"system-reminder", "health_check", "health-check",
+		"convoy_needs_feeding", "convoy-needs-feeding":
+		return true
+	default:
+		return false
+	}
 }
 
 func loadRecentRoutine(townRoot, session string) recentRoutineState {
@@ -274,7 +293,7 @@ func Requeue(townRoot, session string, nudges []QueuedNudge) error {
 		if !n.ExpiresAt.IsZero() && time.Now().After(n.ExpiresAt) {
 			continue
 		}
-		if err := Enqueue(townRoot, session, n); err != nil {
+		if err := enqueue(townRoot, session, n, false); err != nil {
 			return err
 		}
 	}
