@@ -12,7 +12,7 @@ import (
 
 var ErrPolecatAdmissionDenied = errors.New("polecat admission denied")
 
-var countWorkingPolecatsForAdmission = countWorkingPolecats
+var countPolecatSlotsForAdmission = countAdmissionOccupyingPolecats
 
 type admissionReservation struct {
 	once    sync.Once
@@ -42,13 +42,16 @@ func reservePolecatAdmission(townRoot string, maxPolecats int) (*admissionReserv
 	}
 	defer globalRelease()
 
-	working := countWorkingPolecatsForAdmission()
+	occupied, err := countPolecatSlotsForAdmission(townRoot)
+	if err != nil {
+		return nil, fmt.Errorf("counting polecat admission slots: %w", err)
+	}
 	activeReservations, err := countAdmissionReservations(lockDir, maxPolecats)
 	if err != nil {
 		return nil, err
 	}
-	if working+activeReservations >= maxPolecats {
-		return nil, fmt.Errorf("%w: %d active/reserved polecat slots (max %d)", ErrPolecatAdmissionDenied, working+activeReservations, maxPolecats)
+	if occupied+activeReservations >= maxPolecats {
+		return nil, fmt.Errorf("%w: %d occupied/reserved polecat slots (max %d)", ErrPolecatAdmissionDenied, occupied+activeReservations, maxPolecats)
 	}
 
 	for i := 0; i < maxPolecats; i++ {
