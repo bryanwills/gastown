@@ -139,6 +139,136 @@ func TestRecoverySourceDoesNotRequireMQ(t *testing.T) {
 	}
 }
 
+func TestRecoveryIssueIDFallsBackToBranch(t *testing.T) {
+	tests := []struct {
+		name     string
+		assigned string
+		branch   string
+		want     string
+	}{
+		{name: "assigned issue wins", assigned: "gt-live", branch: "polecat/chrome/gt-old@stamp", want: "gt-live"},
+		{name: "polecat branch issue", branch: "polecat/chrome/gt-12-action-leases@mpheebbc", want: "gt-12-action-leases"},
+		{name: "non polecat branch issue prefix", branch: "fix/gt-12-action-leases", want: "gt-12"},
+		{name: "no issue", branch: "main", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := recoveryIssueID(tt.assigned, tt.branch); got != tt.want {
+				t.Errorf("recoveryIssueID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLivePolecatFixtureDispositions(t *testing.T) {
+	tests := []struct {
+		name           string
+		branch         string
+		source         *beads.Issue
+		gitState       *GitState
+		activeMR       string
+		activeMRBD     issueShower
+		finder         mrFinder
+		wantVerdict    string
+		wantMQStatus   string
+		wantNeedsRecov bool
+	}{
+		{
+			name:         "chrome clean terminal source inferred from branch unblocks",
+			branch:       "polecat/chrome/gt-12-action-leases@mpheebbc",
+			source:       &beads.Issue{ID: "gt-12-action-leases", Status: "closed"},
+			gitState:     &GitState{Clean: true, HasBranchWork: true},
+			finder:       fakeMRFinder{},
+			wantVerdict:  "SAFE_TO_NUKE",
+			wantMQStatus: "submitted",
+		},
+		{
+			name:         "brahmin no merge fork PR source skips internal MQ",
+			branch:       "polecat/brahmin/gt-rca-routing-convergence@mpfr891z",
+			source:       &beads.Issue{ID: "gt-rca-routing-convergence", Status: "open", Description: "no_merge: true"},
+			gitState:     &GitState{Clean: true, HasBranchWork: true},
+			finder:       fakeMRFinder{},
+			wantVerdict:  "SAFE_TO_NUKE",
+			wantMQStatus: "submitted",
+		},
+		{
+			name:           "dust dirty worktree remains blocked",
+			branch:         "polecat/dust/gt-12-duplicate-gt-bead-audit@mpigcdab",
+			source:         &beads.Issue{ID: "gt-12-duplicate-gt-bead-audit", Status: "open"},
+			gitState:       &GitState{UncommittedFiles: []string{"file.go"}},
+			wantVerdict:    "NEEDS_RECOVERY",
+			wantNeedsRecov: true,
+		},
+		{
+			name:           "guzzle open active MR remains blocked",
+			branch:         "polecat/guzzle/gt-12-active-mr-ownership@mphfo6qp",
+			source:         &beads.Issue{ID: "gt-12-active-mr-ownership", Status: "closed"},
+			gitState:       &GitState{Clean: true, HasBranchWork: true},
+			activeMR:       "gt-wisp-ekp",
+			activeMRBD:     fakeIssueShower{issue: &beads.Issue{ID: "gt-wisp-ekp", Status: "open"}},
+			finder:         fakeMRFinder{},
+			wantVerdict:    "NEEDS_RECOVERY",
+			wantNeedsRecov: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := evaluateLivePolecatFixtureForTest(tt.branch, tt.source, tt.gitState, tt.activeMR, tt.activeMRBD, tt.finder)
+			if status.Verdict != tt.wantVerdict {
+				t.Errorf("Verdict = %q, want %q", status.Verdict, tt.wantVerdict)
+			}
+			if status.MQStatus != tt.wantMQStatus {
+				t.Errorf("MQStatus = %q, want %q", status.MQStatus, tt.wantMQStatus)
+			}
+			if status.NeedsRecovery != tt.wantNeedsRecov {
+				t.Errorf("NeedsRecovery = %v, want %v", status.NeedsRecovery, tt.wantNeedsRecov)
+			}
+		})
+	}
+}
+
+func evaluateLivePolecatFixtureForTest(branch string, source *beads.Issue, gitState *GitState, activeMR string, activeMRBD issueShower, finder mrFinder) RecoveryStatus {
+	status := RecoveryStatus{
+		Rig:      "gastown",
+		Polecat:  "fixture",
+		Branch:   branch,
+		Issue:    recoveryIssueID("", branch),
+		ActiveMR: activeMR,
+	}
+
+	status.GitState = gitState
+	status.CleanupStatus = cleanupStatusFromGitState(gitState)
+	status.NeedsRecovery = !status.CleanupStatus.IsSafe()
+	if status.NeedsRecovery {
+		status.Verdict = "NEEDS_RECOVERY"
+	} else {
+		status.Verdict = "SAFE_TO_NUKE"
+	}
+
+	if status.Verdict == "SAFE_TO_NUKE" && activeMR != "" {
+		pending, err := activeMRPending(activeMRBD, activeMR)
+		if err != nil {
+			status.NeedsRecovery = true
+			status.Verdict = "NEEDS_RECOVERY"
+			status.Reason = err.Error()
+		} else if pending {
+			status.NeedsRecovery = true
+			status.Verdict = "NEEDS_RECOVERY"
+			status.Reason = "active_mr " + activeMR + " is still open"
+		}
+	}
+
+	if status.Verdict == "SAFE_TO_NUKE" && status.Branch != "" {
+		beadTerminal := isAssignedBeadTerminal(fakeIssueShower{issue: source}, status.Issue)
+		hasSubmittableWork := gitState != nil && (gitState.UnpushedCommits > 0 || gitState.HasBranchWork)
+		applyMQCheck(&status, finder, beadTerminal, hasSubmittableWork)
+	}
+
+	return status
+}
+
 func TestRecoveryPermutationMatrix(t *testing.T) {
 	tests := []struct {
 		name           string

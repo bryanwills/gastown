@@ -2275,13 +2275,15 @@ func isBeadsPath(path string) bool {
 	return strings.Contains(path, ".beads/") || strings.Contains(path, ".beads\\")
 }
 
-// isGasTownRuntimePath returns true if the path is a Gas Town or Cursor runtime
+// IsGasTownRuntimePath returns true if the path is a Gas Town or Cursor runtime
 // artifact that should not block gt done. These paths are managed by the toolchain,
 // not by the developer, and are normally gitignored via EnsureGitignorePatterns.
-func isGasTownRuntimePath(path string) bool {
+func IsGasTownRuntimePath(path string) bool {
 	prefixes := []string{
 		".beads/", ".beads\\",
 		".claude/", ".claude\\",
+		".opencode/", ".opencode\\",
+		"opencode/plugins/", "opencode\\plugins\\",
 		".runtime/", ".runtime\\",
 		".logs/", ".logs\\",
 		"__pycache__/", "__pycache__\\",
@@ -2293,7 +2295,7 @@ func isGasTownRuntimePath(path string) bool {
 	}
 	// Also match bare directory entries from git status (e.g. ".claude/")
 	bare := strings.TrimSuffix(strings.TrimSuffix(path, "/"), "\\")
-	for _, name := range []string{".beads", ".claude", ".runtime", ".logs", "__pycache__"} {
+	for _, name := range []string{".beads", ".claude", ".opencode", ".runtime", ".logs", "__pycache__"} {
 		if bare == name {
 			return true
 		}
@@ -2317,13 +2319,13 @@ func isGasTownRuntimePath(path string) bool {
 // completion on runtime-only dirt (gas-7vg).
 func (s *UncommittedWorkStatus) CleanExcludingRuntime() bool {
 	for _, f := range s.ModifiedFiles {
-		if !isGasTownRuntimePath(f) {
+		if !IsGasTownRuntimePath(f) {
 			return false
 		}
 	}
 
 	for _, f := range s.UntrackedFiles {
-		if !isGasTownRuntimePath(f) {
+		if !IsGasTownRuntimePath(f) {
 			return false
 		}
 	}

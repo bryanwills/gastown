@@ -944,11 +944,17 @@ func getGitState(worktreePath string) (*GitState, error) {
 		return nil, fmt.Errorf("git status: %w", err)
 	}
 	if !gitStatus.Clean {
-		state.UncommittedFiles = append(state.UncommittedFiles, gitStatus.Modified...)
-		state.UncommittedFiles = append(state.UncommittedFiles, gitStatus.Added...)
-		state.UncommittedFiles = append(state.UncommittedFiles, gitStatus.Deleted...)
-		state.UncommittedFiles = append(state.UncommittedFiles, gitStatus.Untracked...)
-		state.Clean = false
+		for _, files := range [][]string{gitStatus.Modified, gitStatus.Added, gitStatus.Deleted, gitStatus.Untracked} {
+			for _, file := range files {
+				if git.IsGasTownRuntimePath(file) {
+					continue
+				}
+				state.UncommittedFiles = append(state.UncommittedFiles, file)
+			}
+		}
+		if len(state.UncommittedFiles) > 0 {
+			state.Clean = false
+		}
 	}
 
 	// Check branch push evidence against the actual push target instead of
@@ -1022,7 +1028,7 @@ func runPolecatCheckRecovery(cmd *cobra.Command, args []string) error {
 		Rig:     rigName,
 		Polecat: polecatName,
 		Branch:  p.Branch,
-		Issue:   p.Issue,
+		Issue:   recoveryIssueID(p.Issue, p.Branch),
 	}
 
 	gitState, gitErr := getGitState(p.ClonePath)
@@ -1187,7 +1193,14 @@ type mrFinder interface {
 // no longer requires merge-queue submission. Returns false on any lookup failure
 // because callers must only use this to *skip* further escalation, never to
 // escalate, so a false negative is safe.
-func isAssignedBeadTerminal(bd *beads.Beads, issueID string) bool {
+func recoveryIssueID(assignedIssue, branch string) string {
+	if assignedIssue != "" {
+		return assignedIssue
+	}
+	return parseBranchName(branch).Issue
+}
+
+func isAssignedBeadTerminal(bd issueShower, issueID string) bool {
 	if issueID == "" || bd == nil {
 		return false
 	}

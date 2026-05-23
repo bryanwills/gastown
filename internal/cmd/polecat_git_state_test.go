@@ -84,6 +84,39 @@ func TestGetGitStateLocalCommitAheadOfPushTargetNeedsRecovery(t *testing.T) {
 	}
 }
 
+func TestGetGitStateIgnoresGeneratedOpenCodeHook(t *testing.T) {
+	localDir := initCmdTestSplitRemoteRepo(t)
+	g := git.NewGit(localDir)
+	pluginPath := filepath.Join(localDir, ".opencode", "plugins", "gastown.js")
+
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0755); err != nil {
+		t.Fatalf("mkdir plugin dir: %v", err)
+	}
+	if err := os.WriteFile(pluginPath, []byte("module.exports = {}\n"), 0644); err != nil {
+		t.Fatalf("write plugin v1: %v", err)
+	}
+	if err := g.Add(".opencode/plugins/gastown.js"); err != nil {
+		t.Fatalf("Add plugin: %v", err)
+	}
+	if err := g.Commit("track opencode hook"); err != nil {
+		t.Fatalf("Commit plugin: %v", err)
+	}
+	if err := g.Push("origin", "HEAD", false); err != nil {
+		t.Fatalf("Push plugin: %v", err)
+	}
+	if err := os.WriteFile(pluginPath, []byte("module.exports = { generated: true }\n"), 0644); err != nil {
+		t.Fatalf("write generated plugin: %v", err)
+	}
+
+	state, err := getGitState(localDir)
+	if err != nil {
+		t.Fatalf("getGitState: %v", err)
+	}
+	if !state.Clean || len(state.UncommittedFiles) != 0 {
+		t.Fatalf("getGitState = clean %v, uncommitted %v; want generated opencode hook ignored", state.Clean, state.UncommittedFiles)
+	}
+}
+
 func initCmdTestSplitRemoteRepo(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()

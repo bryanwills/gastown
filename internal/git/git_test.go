@@ -1904,6 +1904,9 @@ func TestIsGasTownRuntimePath(t *testing.T) {
 		{".claude/settings.json", true},
 		{".claude/commands/foo.md", true},
 		{".claude", true},
+		{".opencode/plugins/gastown.js", true},
+		{"opencode/plugins/gastown.js", true},
+		{".opencode", true},
 		{".runtime/", true},
 		{".runtime/state.json", true},
 		{".runtime", true},
@@ -1921,9 +1924,9 @@ func TestIsGasTownRuntimePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			got := isGasTownRuntimePath(tt.path)
+			got := IsGasTownRuntimePath(tt.path)
 			if got != tt.want {
-				t.Errorf("isGasTownRuntimePath(%q) = %v, want %v", tt.path, got, tt.want)
+				t.Errorf("IsGasTownRuntimePath(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}
