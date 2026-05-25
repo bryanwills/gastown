@@ -945,25 +945,19 @@ func getGitState(worktreePath string) (*GitState, error) {
 		UncommittedFiles: []string{},
 	}
 
-	// Check for uncommitted changes (git status --porcelain)
-	statusCmd := exec.Command("git", "status", "--porcelain")
-	statusCmd.Dir = worktreePath
-	output, err := statusCmd.Output()
+	worktreeGit := git.NewGit(worktreePath)
+	workStatus, err := worktreeGit.CheckUncommittedWork()
 	if err != nil {
 		return nil, fmt.Errorf("git status: %w", err)
 	}
-	if len(output) > 0 {
-		lines := splitLines(string(output))
-		for _, line := range lines {
-			if line != "" {
-				// Extract filename (skip the status prefix)
-				if len(line) > 3 {
-					state.UncommittedFiles = append(state.UncommittedFiles, line[3:])
-				} else {
-					state.UncommittedFiles = append(state.UncommittedFiles, line)
-				}
-			}
+	if workStatus.HasUncommittedChanges {
+		state.UncommittedFiles = workStatus.NonRuntimePaths()
+		if len(state.UncommittedFiles) > 0 {
+			state.Clean = false
 		}
+	}
+	if workStatus.StashCount > 0 {
+		state.StashCount = workStatus.StashCount
 		state.Clean = false
 	}
 
@@ -980,13 +974,6 @@ func getGitState(worktreePath string) (*GitState, error) {
 	// Check for stashes using Git.StashCount() which filters by current branch.
 	// Without branch filtering, worktrees see repo-wide stashes and produce
 	// false "NEEDS_RECOVERY" verdicts for worktrees with zero stashes of their own.
-	worktreeGit := git.NewGit(worktreePath)
-	if stashCount, stashErr := worktreeGit.StashCount(); stashErr == nil {
-		state.StashCount = stashCount
-		if stashCount > 0 {
-			state.Clean = false
-		}
-	}
 	if totalStashes, stashErr := worktreeGit.StashCountAll(); stashErr == nil && totalStashes > state.StashCount {
 		state.SharedStashCount = totalStashes - state.StashCount
 	}

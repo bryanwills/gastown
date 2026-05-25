@@ -121,6 +121,38 @@ func TestGetGitStateTreatsPushedSourceBranchAsClean(t *testing.T) {
 	}
 }
 
+func TestGetGitStateIgnoresOpenCodeRuntimeArtifacts(t *testing.T) {
+	repo := setupGitStateRemoteRepo(t)
+	runGitCmd(t, repo, "switch", "-c", "polecat/opencode-runtime")
+
+	if err := os.MkdirAll(filepath.Join(repo, ".opencode", "plugins"), 0755); err != nil {
+		t.Fatalf("mkdir opencode plugins: %v", err)
+	}
+	writeTestFile(t, filepath.Join(repo, ".opencode", "plugins", "gastown.js"), "// generated\n")
+	state, err := getGitState(repo)
+	if err != nil {
+		t.Fatalf("getGitState: %v", err)
+	}
+	if !state.Clean {
+		t.Fatalf("OpenCode runtime artifact should not dirty recovery state: %+v", state)
+	}
+	if len(state.UncommittedFiles) != 0 {
+		t.Fatalf("UncommittedFiles = %v, want none for runtime-only artifact", state.UncommittedFiles)
+	}
+
+	writeTestFile(t, filepath.Join(repo, "real.go"), "package real\n")
+	state, err = getGitState(repo)
+	if err != nil {
+		t.Fatalf("getGitState with real file: %v", err)
+	}
+	if state.Clean {
+		t.Fatal("real source dirt should still block recovery")
+	}
+	if len(state.UncommittedFiles) != 1 || state.UncommittedFiles[0] != "real.go" {
+		t.Fatalf("UncommittedFiles = %v, want only real.go", state.UncommittedFiles)
+	}
+}
+
 func setupGitStateRemoteRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

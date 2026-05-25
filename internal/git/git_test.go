@@ -2165,6 +2165,9 @@ func TestIsGasTownRuntimePath(t *testing.T) {
 		{".runtime/", true},
 		{".runtime/state.json", true},
 		{".runtime", true},
+		{".opencode/", true},
+		{".opencode/plugins/gastown.js", true},
+		{".opencode/commands/handoff.md", true},
 		{".beads/", true},
 		{".beads/db.json", true},
 		{".beads\\db.json", true},
@@ -2211,7 +2214,7 @@ func TestCleanExcludingRuntime(t *testing.T) {
 			name: "only runtime artifacts",
 			s: UncommittedWorkStatus{
 				HasUncommittedChanges: true,
-				UntrackedFiles:        []string{".claude/", ".runtime/state.json"},
+				UntrackedFiles:        []string{".claude/", ".opencode/plugins/gastown.js", ".runtime/state.json"},
 			},
 			want: true,
 		},
@@ -2318,6 +2321,7 @@ func TestRuntimeArtifactPaths(t *testing.T) {
 			"src/handler.go",
 		},
 		UntrackedFiles: []string{
+			".opencode/plugins/gastown.js",
 			"services/cyrus/workflow-cyrus-edge/node_modules/pkg/index.js",
 			"services/cyrus/workflow-cyrus-edge/node_modules/pkg/package.json",
 			"dashboard/public/meridian-dashboard/.vite/vitest/hash/results.json",
@@ -2330,6 +2334,7 @@ func TestRuntimeArtifactPaths(t *testing.T) {
 	got := status.RuntimeArtifactPaths()
 	want := []string{
 		"services/workflows/collateral-internal/execution_log.db",
+		".opencode/",
 		"services/cyrus/workflow-cyrus-edge/node_modules/",
 		"dashboard/public/meridian-dashboard/.vite/",
 		"api/.pytest_cache/",

@@ -497,7 +497,7 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		}
 
 		// Block if there are uncommitted changes (would be lost on completion).
-		// Runtime artifacts (.claude/, .beads/, .runtime/, __pycache__/) are
+		// Runtime artifacts (.claude/, .opencode/, .beads/, .runtime/, __pycache__/) are
 		// excluded — these are toolchain-managed and normally gitignored.
 		// Without this filter, gt done fails on virtually every polecat because
 		// Cursor creates .claude/ at runtime in every workspace.

@@ -2557,7 +2557,7 @@ func runtimeArtifactRoot(path string) (string, bool) {
 	parts := strings.Split(bare, "/")
 	for i, part := range parts {
 		switch part {
-		case ".beads", ".claude", ".runtime", ".logs", "__pycache__", "node_modules", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", "coverage", "htmlcov":
+		case ".beads", ".claude", ".opencode", ".runtime", ".logs", "__pycache__", "node_modules", ".vite", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache", "coverage", "htmlcov":
 			return strings.Join(parts[:i+1], "/") + "/", true
 		}
 	}
@@ -2592,6 +2592,19 @@ func (s *UncommittedWorkStatus) RuntimeArtifactPaths() []string {
 		}
 		seen[root] = true
 		paths = append(paths, root)
+	}
+	return paths
+}
+
+// NonRuntimePaths returns uncommitted paths that are not covered by the runtime
+// artifact policy. Recovery checks use this to ignore generated tool state while
+// still blocking on real source changes.
+func (s *UncommittedWorkStatus) NonRuntimePaths() []string {
+	var paths []string
+	for _, f := range append(append([]string{}, s.ModifiedFiles...), s.UntrackedFiles...) {
+		if !isGasTownRuntimePath(f) {
+			paths = append(paths, f)
+		}
 	}
 	return paths
 }

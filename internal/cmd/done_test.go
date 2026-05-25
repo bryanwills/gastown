@@ -1465,6 +1465,7 @@ func TestAutoCommitSafetyNet(t *testing.T) {
 		}
 
 		writeFile("src/handler.go", "package main\n\nfunc handler() {}\n")
+		writeFile(".opencode/plugins/gastown.js", "// generated\n")
 		writeFile("services/cyrus/workflow-cyrus-edge/node_modules/pkg/index.js", "module.exports = {}\n")
 		writeFile("dashboard/public/meridian-dashboard/.vite/vitest/hash/results.json", "{}\n")
 		writeFile("services/workflows/collateral-internal/execution_log.db", "sqlite\n")
