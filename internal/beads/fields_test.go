@@ -348,10 +348,11 @@ func TestSetConvoyFields(t *testing.T) {
 
 func TestConvoyFieldsParseFormatRoundTrip(t *testing.T) {
 	original := &ConvoyFields{
-		Owner:    "mayor/",
-		Notify:   "witness/",
-		Merge:    "direct",
-		Molecule: "gt-wisp-abc",
+		Owner:                "mayor/",
+		Notify:               "witness/",
+		Merge:                "direct",
+		Molecule:             "gt-wisp-abc",
+		CompletionNotifiedAt: "2026-05-25T02:30:00Z",
 	}
 	formatted := FormatConvoyFields(original)
 	parsed := ParseConvoyFields(&Issue{Description: formatted})
@@ -369,6 +370,9 @@ func TestConvoyFieldsParseFormatRoundTrip(t *testing.T) {
 	}
 	if parsed.Molecule != original.Molecule {
 		t.Errorf("Molecule: got %q, want %q", parsed.Molecule, original.Molecule)
+	}
+	if parsed.CompletionNotifiedAt != original.CompletionNotifiedAt {
+		t.Errorf("CompletionNotifiedAt: got %q, want %q", parsed.CompletionNotifiedAt, original.CompletionNotifiedAt)
 	}
 }
 

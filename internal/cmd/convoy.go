@@ -777,11 +777,12 @@ func runConvoyAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	var convoys []struct {
-		ID     string   `json:"id"`
-		Title  string   `json:"title"`
-		Status string   `json:"status"`
-		Type   string   `json:"issue_type"`
-		Labels []string `json:"labels"`
+		ID          string   `json:"id"`
+		Title       string   `json:"title"`
+		Status      string   `json:"status"`
+		Type        string   `json:"issue_type"`
+		Description string   `json:"description"`
+		Labels      []string `json:"labels"`
 	}
 	if err := json.Unmarshal(showOut, &convoys); err != nil {
 		return fmt.Errorf("parsing convoy data: %w", err)
@@ -811,6 +812,16 @@ func runConvoyAdd(cmd *cobra.Command, args []string) error {
 			WithAutoCommit().
 			Run(); err != nil {
 			return fmt.Errorf("couldn't reopen convoy: %w", err)
+		}
+		if fields := beads.ParseConvoyFields(&beads.Issue{Description: convoy.Description}); fields != nil && fields.CompletionNotifiedAt != "" {
+			fields.CompletionNotifiedAt = ""
+			newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoy.Description}, fields)
+			if err := BdCmd("update", convoyID, "--description="+newDesc).
+				Dir(townBeads).
+				WithAutoCommit().
+				Run(); err != nil {
+				return fmt.Errorf("couldn't clear convoy completion notification state: %w", err)
+			}
 		}
 		reopened = true
 		fmt.Printf("%s Reopened convoy %s\n", style.Bold.Render("↺"), convoyID)
@@ -1657,6 +1668,18 @@ func notifyConvoyCompletion(townBeads, convoyID, title string) {
 
 	// ZFC: Use typed accessor instead of parsing description text
 	fields := beads.ParseConvoyFields(&beads.Issue{Description: convoys[0].Description})
+	if fields == nil {
+		fields = &beads.ConvoyFields{}
+	}
+	if fields.CompletionNotifiedAt != "" {
+		return
+	}
+	fields.CompletionNotifiedAt = time.Now().UTC().Format(time.RFC3339)
+	newDesc := beads.SetConvoyFields(&beads.Issue{Description: convoys[0].Description}, fields)
+	if err := BdCmd("update", convoyID, "--description="+newDesc).Dir(townBeads).WithAutoCommit().Run(); err != nil {
+		style.PrintWarning("could not record convoy completion notification state for %s: %v", convoyID, err)
+		return
+	}
 
 	// Compute duration since convoy was created.
 	var durationStr string
