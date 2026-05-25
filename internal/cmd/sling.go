@@ -823,9 +823,11 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		}
 
 		// Unhook the bead from old owner (set status back to open)
-		unhookCmd := exec.Command("bd", "update", beadID, "--status=open", "--assignee=")
-		unhookCmd.Dir = beads.ResolveHookDir(townRoot, beadID, "")
-		if err := unhookCmd.Run(); err != nil {
+		unhookDir := beads.ResolveHookDir(townRoot, beadID, "")
+		if err := BdCmd("update", beadID, "--status=open", "--assignee=").
+			Dir(unhookDir).
+			WithAutoCommit().
+			Run(); err != nil {
 			fmt.Printf("%s Could not unhook bead from old owner: %v\n", style.Dim.Render("Warning:"), err)
 		}
 	}
@@ -1178,11 +1180,10 @@ func restorePinnedBead(townRoot, beadID, assignee string) {
 		return
 	}
 	dir := beads.ResolveHookDir(townRoot, beadID, "")
-	cmd := exec.Command("bd", "update", beadID, "--status=pinned", "--assignee="+assignee)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	if err := cmd.Run(); err != nil {
+	if err := BdCmd("update", beadID, "--status=pinned", "--assignee="+assignee).
+		Dir(dir).
+		WithAutoCommit().
+		Run(); err != nil {
 		fmt.Printf("  %s Could not restore pinned state for bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
 	} else {
 		fmt.Printf("  %s Restored pinned state for bead %s\n", style.Dim.Render("○"), beadID)
@@ -1294,9 +1295,10 @@ func rollbackSlingArtifacts(spawnInfo *SpawnedPolecatInfo, beadID, hookWorkDir, 
 
 			// 2. Unhook the bead (set status back to open so it can be re-slung).
 			unhookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
-			unhookCmd := exec.Command("bd", "update", beadID, "--status=open", "--assignee=")
-			unhookCmd.Dir = unhookDir
-			if err := unhookCmd.Run(); err != nil {
+			if err := BdCmd("update", beadID, "--status=open", "--assignee=").
+				Dir(unhookDir).
+				WithAutoCommit().
+				Run(); err != nil {
 				fmt.Printf("  %s Could not unhook bead %s: %v\n", style.Dim.Render("Warning:"), beadID, err)
 			} else {
 				fmt.Printf("  %s Unhooked bead %s\n", style.Dim.Render("○"), beadID)

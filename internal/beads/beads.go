@@ -777,7 +777,12 @@ func (b *Beads) buildRunEnv() []string {
 		}
 		return SuppressBDSideEffects(env)
 	}
-	return BuildPinnedBDEnv(os.Environ(), b.getResolvedBeadsDir())
+	// runWithStdin appends BEADS_DIR after probing bd --allow-stale support, so
+	// keep buildRunEnv focused on Dolt target isolation and avoid duplicate
+	// first-match-sensitive BEADS_DIR entries.
+	env := BuildPinnedBDEnv(os.Environ(), b.getResolvedBeadsDir())
+	env = stripEnvKey(env, "BEADS_DIR")
+	return stripEnvKey(env, "BEADS_DOLT_SERVER_PORT")
 }
 
 // buildRoutingEnv builds the environment for runWithRouting() calls.
@@ -794,7 +799,8 @@ func (b *Beads) buildRoutingEnv() []string {
 		}
 		return SuppressBDSideEffects(env)
 	}
-	return BuildRoutingBDEnv(os.Environ(), b.getResolvedBeadsDir())
+	env := BuildRoutingBDEnv(os.Environ(), b.getResolvedBeadsDir())
+	return stripEnvKey(env, "BEADS_DOLT_SERVER_PORT")
 }
 
 // filterBeadsEnv removes beads-related environment variables from the given
