@@ -2565,6 +2565,25 @@ func TestCheckUncommittedWorkCapturesPorcelainRenameAndUnmergedPaths(t *testing.
 		}
 	})
 
+	t.Run("small copy from real path to runtime path blocks", func(t *testing.T) {
+		dir := initTestRepo(t)
+		if err := os.MkdirAll(filepath.Join(dir, ".opencode", "plugins"), 0755); err != nil {
+			t.Fatalf("mkdir opencode plugins: %v", err)
+		}
+		copyFileForTest(t, filepath.Join(dir, "README.md"), filepath.Join(dir, ".opencode", "plugins", "gastown.js"))
+
+		status, err := NewGit(dir).CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		if got := status.NonRuntimePaths(); len(got) != 1 || got[0] != "README.md" {
+			t.Fatalf("NonRuntimePaths = %v, want [README.md]", got)
+		}
+		if status.CleanExcludingRuntime() {
+			t.Fatal("small real source copied to runtime destination must block runtime-excluding clean check")
+		}
+	})
+
 	t.Run("staged copy from real path to runtime path blocks", func(t *testing.T) {
 		dir := initTestRepoWithLargeReadme(t)
 		if err := os.MkdirAll(filepath.Join(dir, ".opencode", "plugins"), 0755); err != nil {

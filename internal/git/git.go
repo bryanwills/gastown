@@ -1146,7 +1146,7 @@ func (g *Git) Status() (*GitStatus, error) {
 			status.Untracked = append(status.Untracked, file)
 		case strings.ContainsAny(code, "RC"):
 			status.Modified = append(status.Modified, file)
-			if entry.SourcePath != "" && (strings.Contains(code, "R") || g.largeEnoughWorktreeFile(entry.SourcePath)) {
+			if entry.SourcePath != "" && (strings.Contains(code, "R") || g.regularWorktreeFile(entry.SourcePath)) {
 				status.SourcePaths = append(status.SourcePaths, entry.SourcePath)
 			}
 		case strings.Contains(code, "M"):
@@ -2821,8 +2821,6 @@ func nonRuntimePaths(paths []string) []string {
 	return result
 }
 
-const minRuntimeCopySourceBytes = 16
-
 func (g *Git) runtimeCopySources(status *GitStatus) []string {
 	var candidates []string
 	for _, path := range uniqueStrings(append(append([]string{}, status.Modified...), append(status.Added, status.Untracked...)...)) {
@@ -2879,7 +2877,7 @@ func (g *Git) trackedNonRuntimeBlobSources(skip map[string]bool) (map[string][]s
 			continue
 		}
 		path := record[tab+1:]
-		if skip[path] || isGasTownRuntimePath(path) || !g.largeEnoughWorktreeFile(path) {
+		if skip[path] || isGasTownRuntimePath(path) || !g.regularWorktreeFile(path) {
 			continue
 		}
 		hash, ok := g.worktreeBlobHash(path)
@@ -2892,7 +2890,7 @@ func (g *Git) trackedNonRuntimeBlobSources(skip map[string]bool) (map[string][]s
 }
 
 func (g *Git) worktreeBlobHash(path string) (string, bool) {
-	if !g.largeEnoughWorktreeFile(path) {
+	if !g.regularWorktreeFile(path) {
 		return "", false
 	}
 	out, err := g.run("hash-object", "--", path)
@@ -2902,9 +2900,9 @@ func (g *Git) worktreeBlobHash(path string) (string, bool) {
 	return strings.TrimSpace(out), strings.TrimSpace(out) != ""
 }
 
-func (g *Git) largeEnoughWorktreeFile(path string) bool {
+func (g *Git) regularWorktreeFile(path string) bool {
 	info, err := os.Stat(filepath.Join(g.workDir, filepath.FromSlash(path)))
-	return err == nil && info.Mode().IsRegular() && info.Size() >= minRuntimeCopySourceBytes
+	return err == nil && info.Mode().IsRegular()
 }
 
 // BranchPushedToRemote checks if a branch has been pushed to the remote.
