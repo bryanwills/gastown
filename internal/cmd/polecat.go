@@ -1569,8 +1569,11 @@ func applyMQCheck(status *RecoveryStatus, bd mrFinder, beadTerminal, hasSubmitta
 	}
 	mr, mrErr := bd.FindMRForBranchAny(status.Branch)
 	if mrErr != nil {
-		// Can't verify MQ — be conservative
+		// Can't verify MQ — fail closed until the queue state can be checked.
 		status.MQStatus = "unknown"
+		status.NeedsRecovery = true
+		status.Verdict = "NEEDS_RECOVERY"
+		status.Blockers = append(status.Blockers, fmt.Sprintf("mq_lookup_error: %v", mrErr))
 		return
 	}
 	if mr != nil {

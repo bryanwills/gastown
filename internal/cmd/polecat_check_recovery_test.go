@@ -129,14 +129,14 @@ func TestApplyMQCheck(t *testing.T) {
 			wantNeedsRecov: false,
 		},
 		{
-			name:           "MR lookup error is conservative (unknown, no escalation)",
+			name:           "MR lookup error fails closed",
 			finder:         fakeMRFinder{issue: nil, err: errors.New("bd exploded")},
 			beadTerminal:   false,
 			hasWork:        true,
 			initialVerdict: "SAFE_TO_NUKE",
-			wantVerdict:    "SAFE_TO_NUKE",
+			wantVerdict:    "NEEDS_RECOVERY",
 			wantMQStatus:   "unknown",
-			wantNeedsRecov: false,
+			wantNeedsRecov: true,
 		},
 	}
 
