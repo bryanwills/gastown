@@ -2350,6 +2350,121 @@ func TestRuntimeArtifactPaths(t *testing.T) {
 	}
 }
 
+func TestPorcelainStatusPathUsesRenameCopyDestination(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		path string
+		want string
+	}{
+		{name: "rename", code: "R ", path: "old.txt -> new.txt", want: "new.txt"},
+		{name: "copy", code: "C ", path: "old.txt -> copied.txt", want: "copied.txt"},
+		{name: "unmerged", code: "UU", path: "conflict.txt", want: "conflict.txt"},
+		{name: "modified", code: " M", path: "src/main.go", want: "src/main.go"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := porcelainStatusPath(tt.code, tt.path); got != tt.want {
+				t.Fatalf("porcelainStatusPath(%q, %q) = %q, want %q", tt.code, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckUncommittedWorkCapturesPorcelainRenameAndUnmergedPaths(t *testing.T) {
+	t.Run("rename to real path blocks", func(t *testing.T) {
+		dir := initTestRepo(t)
+		runGitTestCmd(t, dir, "mv", "README.md", "renamed.md")
+
+		status, err := NewGit(dir).CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		if !status.HasUncommittedChanges {
+			t.Fatal("rename should mark worktree dirty")
+		}
+		if got := status.NonRuntimePaths(); len(got) != 1 || got[0] != "renamed.md" {
+			t.Fatalf("NonRuntimePaths = %v, want [renamed.md]", got)
+		}
+		if status.CleanExcludingRuntime() {
+			t.Fatal("rename to real path must block runtime-excluding clean check")
+		}
+	})
+
+	t.Run("rename to runtime path is ignored by runtime filter", func(t *testing.T) {
+		dir := initTestRepo(t)
+		if err := os.MkdirAll(filepath.Join(dir, ".opencode", "plugins"), 0755); err != nil {
+			t.Fatalf("mkdir opencode plugins: %v", err)
+		}
+		runGitTestCmd(t, dir, "mv", "README.md", ".opencode/plugins/gastown.js")
+
+		status, err := NewGit(dir).CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		if !status.HasUncommittedChanges {
+			t.Fatal("runtime rename should still mark raw worktree dirty")
+		}
+		if got := status.NonRuntimePaths(); len(got) != 0 {
+			t.Fatalf("NonRuntimePaths = %v, want none for runtime destination", got)
+		}
+		if !status.CleanExcludingRuntime() {
+			t.Fatal("runtime destination should be clean excluding runtime")
+		}
+	})
+
+	t.Run("unmerged conflict blocks", func(t *testing.T) {
+		dir := initTestRepo(t)
+		runGitTestCmd(t, dir, "branch", "-M", "main")
+		if err := os.WriteFile(filepath.Join(dir, "conflict.txt"), []byte("base\n"), 0644); err != nil {
+			t.Fatalf("write base conflict file: %v", err)
+		}
+		runGitTestCmd(t, dir, "add", "conflict.txt")
+		runGitTestCmd(t, dir, "commit", "-m", "add conflict base")
+		runGitTestCmd(t, dir, "switch", "-c", "side")
+		if err := os.WriteFile(filepath.Join(dir, "conflict.txt"), []byte("side\n"), 0644); err != nil {
+			t.Fatalf("write side conflict file: %v", err)
+		}
+		runGitTestCmd(t, dir, "commit", "-am", "side change")
+		runGitTestCmd(t, dir, "switch", "main")
+		if err := os.WriteFile(filepath.Join(dir, "conflict.txt"), []byte("main\n"), 0644); err != nil {
+			t.Fatalf("write main conflict file: %v", err)
+		}
+		runGitTestCmd(t, dir, "commit", "-am", "main change")
+		runGitTestCmdWantFailure(t, dir, "merge", "side")
+
+		status, err := NewGit(dir).CheckUncommittedWork()
+		if err != nil {
+			t.Fatalf("CheckUncommittedWork: %v", err)
+		}
+		if got := status.NonRuntimePaths(); len(got) != 1 || got[0] != "conflict.txt" {
+			t.Fatalf("NonRuntimePaths = %v, want [conflict.txt]", got)
+		}
+		if status.CleanExcludingRuntime() {
+			t.Fatal("unmerged conflict must block runtime-excluding clean check")
+		}
+	})
+}
+
+func runGitTestCmd(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+func runGitTestCmdWantFailure(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("git %v unexpectedly succeeded\n%s", args, out)
+	}
+}
+
 func TestCheckBranchContamination(t *testing.T) {
 	// Create a repo with main and a feature branch that diverges.
 	dir := initTestRepo(t) // has initial commit on default branch

@@ -1102,9 +1102,15 @@ func (g *Git) Status() (*GitStatus, error) {
 			continue
 		}
 		code := line[:2]
-		file := line[3:]
+		file := porcelainStatusPath(code, line[3:])
 
 		switch {
+		case strings.Contains(code, "?"):
+			status.Untracked = append(status.Untracked, file)
+		case strings.ContainsAny(code, "RC"):
+			status.Modified = append(status.Modified, file)
+		case isUnmergedPorcelainStatus(code):
+			status.Modified = append(status.Modified, file)
 		case strings.Contains(code, "M"):
 			status.Modified = append(status.Modified, file)
 		case strings.Contains(code, "A"):
@@ -1114,8 +1120,10 @@ func (g *Git) Status() (*GitStatus, error) {
 			if !skipWorktree[file] {
 				status.Deleted = append(status.Deleted, file)
 			}
-		case strings.Contains(code, "?"):
-			status.Untracked = append(status.Untracked, file)
+		default:
+			// Unknown porcelain statuses still represent local work. Returning the
+			// path is safer than letting cleanup/recovery treat the worktree as clean.
+			status.Modified = append(status.Modified, file)
 		}
 	}
 
@@ -1126,6 +1134,24 @@ func (g *Git) Status() (*GitStatus, error) {
 	}
 
 	return status, nil
+}
+
+func porcelainStatusPath(code, path string) string {
+	if strings.ContainsAny(code, "RC") {
+		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+			return path[idx+4:]
+		}
+	}
+	return path
+}
+
+func isUnmergedPorcelainStatus(code string) bool {
+	switch code {
+	case "DD", "AU", "UD", "UA", "DU", "AA", "UU":
+		return true
+	default:
+		return strings.Contains(code, "U")
+	}
 }
 
 // skipWorktreeFiles returns a set of file paths that have the skip-worktree
