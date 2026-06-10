@@ -372,6 +372,33 @@ func TestFindHookedBeadForAgent(t *testing.T) {
 	}
 }
 
+// TestIsStaleBranchIssue verifies the stale-branch guard (hq-l0fj): a
+// branch-derived issue id is overridden only when it conflicts with the
+// hooked bead and is not a subtask of it.
+func TestIsStaleBranchIssue(t *testing.T) {
+	tests := []struct {
+		name        string
+		branchIssue string
+		hookedIssue string
+		want        bool
+	}{
+		{"matching ids are not stale", "hq-oibv", "hq-oibv", false},
+		{"reused branch from closed bead is stale", "re-ofo", "hq-oibv", true},
+		{"subtask of hooked bead is not stale", "gt-abc.1", "gt-abc", false},
+		{"different bead with shared prefix is stale", "gt-abc1", "gt-abc", true},
+		{"no branch issue is not stale", "", "hq-oibv", false},
+		{"no hooked bead is not stale", "re-ofo", "", false},
+		{"both empty is not stale", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStaleBranchIssue(tt.branchIssue, tt.hookedIssue); got != tt.want {
+				t.Errorf("isStaleBranchIssue(%q, %q) = %v, want %v", tt.branchIssue, tt.hookedIssue, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsPolecatActor verifies that isPolecatActor correctly identifies
 // polecat actors vs other roles based on the BD_ACTOR format.
 func TestIsPolecatActor(t *testing.T) {

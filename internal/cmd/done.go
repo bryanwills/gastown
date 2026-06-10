@@ -444,6 +444,23 @@ func runDone(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 
+	// Stale-branch guard (hq-l0fj): a redispatched polecat that reuses its
+	// previous work branch carries the OLD bead-id in the branch name, which
+	// would mis-attribute this MR (close credit goes to a closed bead; the
+	// real issue stays open and hooked). When the branch-derived id differs
+	// from the hooked bead, trust the hook. An explicit --issue flag still
+	// wins, and subtask branches of the hooked bead (e.g. gt-abc.1 under
+	// hooked gt-abc) are left alone.
+	if doneIssue == "" && info.Issue != "" && sender != "" {
+		bd := beads.New(cwd)
+		if hookIssue := findHookedBeadForAgent(bd, sender); isStaleBranchIssue(info.Issue, hookIssue) {
+			style.PrintWarning("branch %q embeds issue %s but your hooked bead is %s — submitting for %s (stale branch reuse?)", branch, info.Issue, hookIssue, hookIssue)
+			fmt.Printf("  Fresh branches must be named polecat/<name>/<bead-id>@<suffix> for the bead you are working.\n")
+			fmt.Printf("  Use --issue to override if the branch-derived id is actually correct.\n\n")
+			issueID = hookIssue
+		}
+	}
+
 	// Write done-intent label EARLY, before push/MR operations.
 	// If gt done crashes after this point, the Witness can detect the intent
 	// and auto-nuke the zombie polecat.
@@ -1929,6 +1946,17 @@ doneStateUpdate:
 	// lingering labels to detect the zombie and resume from checkpoints.
 	clearDoneIntentLabel(agentBd, agentBeadID)
 	clearDoneCheckpoints(agentBd, agentBeadID)
+}
+
+// isStaleBranchIssue reports whether a branch-derived issue id should be
+// overridden by the agent's hooked bead (hq-l0fj stale-branch guard).
+// True when both ids exist, they differ, and the branch id is not a subtask
+// of the hooked bead (e.g. branch gt-abc.1 under hooked gt-abc is fine).
+func isStaleBranchIssue(branchIssue, hookedIssue string) bool {
+	if branchIssue == "" || hookedIssue == "" {
+		return false
+	}
+	return branchIssue != hookedIssue && !strings.HasPrefix(branchIssue, hookedIssue+".")
 }
 
 // findHookedBeadForAgent queries for beads with status=hooked assigned to this agent.
