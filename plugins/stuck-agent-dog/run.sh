@@ -53,6 +53,26 @@ has_in_progress_work() {
   return 1
 }
 
+# --- Beads resolution helpers -------------------------------------------------
+# The plugin runs from the dog's cwd, which is NOT a beads workspace. `gt hook
+# show` and `bd` resolve the beads database from the CWD, so they must run from
+# the target rig's directory to hit that rig's database — otherwise they fail
+# with "not in a beads workspace" / "no beads database found". Each helper runs
+# in a subshell cd'd into the rig dir and is non-fatal: a rig whose beads cannot
+# be resolved (e.g. an inactive rig) is skipped instead of aborting the whole
+# plugin under `set -e` (hq-9e770).
+
+rig_hook_line() {
+  local rig="$1" pcat="$2"
+  ( cd "$TOWN_ROOT/$rig" 2>/dev/null && gt hook show "$rig/polecats/$pcat" 2>/dev/null | head -1 ) || true
+}
+
+rig_bead_status() {
+  local rig="$1" bead="$2"
+  ( cd "$TOWN_ROOT/$rig" 2>/dev/null && bd show "$bead" --json 2>/dev/null ) \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('status','') if d else '')" 2>/dev/null || echo ""
+}
+
 # --- Enumerate agents ---------------------------------------------------------
 
 log "=== Checking agent health ==="
@@ -87,13 +107,12 @@ while IFS='|' read -r RIG PREFIX; do
 
     if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
       # Session dead — check hook
-      HOOK_OUTPUT=$(gt hook show "$RIG/polecats/$PCAT_NAME" 2>/dev/null | head -1)
+      HOOK_OUTPUT=$(rig_hook_line "$RIG" "$PCAT_NAME")
       HOOK_BEAD=$(echo "$HOOK_OUTPUT" | grep -v '(empty)' | awk '{print $2}' || true)
 
       if [ -n "$HOOK_BEAD" ]; then
         # Check agent_state
-        AGENT_STATE=$(bd show "$HOOK_BEAD" --json 2>/dev/null \
-          | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0].get('status',''))" 2>/dev/null || echo "")
+        AGENT_STATE=$(rig_bead_status "$RIG" "$HOOK_BEAD")
 
         case "$AGENT_STATE" in
           closed) log "  SKIP $SESSION_NAME: bead closed (completed normally)"; continue ;;
@@ -109,7 +128,7 @@ while IFS='|' read -r RIG PREFIX; do
         PROC_COMM=$(ps -o comm= -p "$PANE_PID" 2>/dev/null)
         if [ -z "$PROC_COMM" ]; then
           # Zombie: process dead, session alive
-          HOOK_OUTPUT=$(gt hook show "$RIG/polecats/$PCAT_NAME" 2>/dev/null | head -1)
+          HOOK_OUTPUT=$(rig_hook_line "$RIG" "$PCAT_NAME")
           HOOK_BEAD=$(echo "$HOOK_OUTPUT" | grep -v '(empty)' | awk '{print $2}' || true)
           if [ -n "$HOOK_BEAD" ]; then
             STUCK+=("$SESSION_NAME|$RIG|$PCAT_NAME|$HOOK_BEAD|agent_dead")
