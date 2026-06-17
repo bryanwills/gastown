@@ -116,6 +116,46 @@ func TestNotifyMayorSlotOpen_SchedulerDispatchSuppressesMayor(t *testing.T) {
 	}
 }
 
+func TestNotifyMayorSlotOpen_DispatchThenEmptyEmitsSchedulerOpen(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	townRoot, workDir := setupSlotOpenTestTown(t)
+
+	prevRecovery := slotOpenRecoveryCheck
+	prevDecision := slotOpenDecisionForNotify
+	prevScheduler := runSchedulerForSlotOpen
+	t.Cleanup(func() {
+		slotOpenRecoveryCheck = prevRecovery
+		slotOpenDecisionForNotify = prevDecision
+		runSchedulerForSlotOpen = prevScheduler
+	})
+
+	slotOpenRecoveryCheck = func(workDir, rigName, polecatName string) (string, error) {
+		return `{"verdict":"SAFE_TO_NUKE"}`, nil
+	}
+	slotOpenDecisionForNotify = func(workDir, townRoot, rigName, polecatName, exitType string) polecat.SlotReuseDecision {
+		return polecat.SlotReuseDecision{Reusable: true}
+	}
+	runSchedulerForSlotOpen = func(gotTownRoot string) (slotOpenSchedulerResult, error) {
+		var result slotOpenSchedulerResult
+		result.Ran = true
+		result.Dispatched = 1
+		result.After.Capacity.Max = 10
+		result.After.Capacity.Free = 1
+		result.After.QueuedReady = 0
+		return result, nil
+	}
+
+	notifyMayorSlotOpen(workDir, "gastown", "guzzle", string(ExitTypeCompleted))
+
+	events := readMayorEvents(t, townRoot)
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want one SCHEDULER_OPEN event", events)
+	}
+	if events[0].Type != "SCHEDULER_OPEN" {
+		t.Fatalf("event type = %q, want SCHEDULER_OPEN", events[0].Type)
+	}
+}
+
 func TestNotifyMayorSlotOpen_EmitsSchedulerOpenWhenQueueEmpty(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	townRoot, workDir := setupSlotOpenTestTown(t)
@@ -194,6 +234,26 @@ func TestNotifyMayorSlotOpen_QueuedReadyWithoutDispatchFallsBack(t *testing.T) {
 	}
 	if events[0].Type != "SLOT_OPEN" {
 		t.Fatalf("event type = %q, want SLOT_OPEN", events[0].Type)
+	}
+}
+
+func TestParseSchedulerRunDispatched(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{name: "dispatched", output: "\n✓ Dispatched 2, failed 0 (reason: batch)\n", want: 2},
+		{name: "skipped", output: "\n○ Skipped 1 bead(s) — zero capacity\n", want: 0},
+		{name: "cleanup only", output: "", want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseSchedulerRunDispatched(tt.output); got != tt.want {
+				t.Fatalf("parseSchedulerRunDispatched() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

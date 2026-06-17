@@ -443,6 +443,16 @@ func TestSchedulerBlockedStatusReporting(t *testing.T) {
 	if !foundBlocked {
 		t.Fatalf("unblocked queued bead %s not found in scheduler list", blockedID)
 	}
+	contextCount := 0
+	for _, ctx := range listAllSlingContexts(hqPath) {
+		fields := beads.ParseSlingContextFields(ctx.Description)
+		if fields != nil && fields.WorkBeadID == blockedID {
+			contextCount++
+		}
+	}
+	if contextCount != 1 {
+		t.Fatalf("open sling contexts for %s = %d, want 1", blockedID, contextCount)
+	}
 
 	status = getSchedulerStatus(t, gtBinary, hqPath, env)
 	total = int(status["queued_total"].(float64))

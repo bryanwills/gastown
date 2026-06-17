@@ -786,22 +786,34 @@ func defaultRunSchedulerForSlotOpen(townRoot string) (slotOpenSchedulerResult, e
 		return result, nil
 	}
 
-	output, err := runGTForSlotOpen(townRoot, "scheduler", "run", "--batch", strconv.Itoa(before.Capacity.Free))
+	output, err := runGTForSlotOpen(townRoot, "scheduler", "run")
 	result.Ran = true
 	result.Output = output
 	if err != nil {
 		return result, err
 	}
+	result.Dispatched = parseSchedulerRunDispatched(output)
 
 	after, err := readSchedulerStatusForSlotOpen(townRoot)
 	if err != nil {
 		return result, err
 	}
 	result.After = after
-	if before.QueuedReady > after.QueuedReady {
-		result.Dispatched = before.QueuedReady - after.QueuedReady
-	}
 	return result, nil
+}
+
+func parseSchedulerRunDispatched(output string) int {
+	fields := strings.Fields(output)
+	for i, field := range fields {
+		if field != "Dispatched" || i+1 >= len(fields) {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimRight(fields[i+1], ","))
+		if err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 func readSchedulerStatusForSlotOpen(townRoot string) (slotOpenSchedulerStatus, error) {
@@ -906,9 +918,12 @@ func notifyMayorSlotOpen(workDir, rigName, polecatName, exitType string) {
 	if result, err := runSchedulerForSlotOpen(townRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "witness: SLOT_OPEN scheduler trigger failed for %s/%s: %v\n", rigName, polecatName, err)
 	} else if result.Dispatched > 0 {
+		if status, ok := schedulerOpenAfterSlot(result); ok {
+			notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType, status)
+		}
 		return
-	} else if schedulerOpenAfterSlot(result) {
-		notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType, result)
+	} else if status, ok := schedulerOpenAfterSlot(result); ok {
+		notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType, status)
 		return
 	} else if result.Before.Capacity.Max > 0 && (result.Before.Paused || result.Before.Capacity.Free <= 0) {
 		return
@@ -941,18 +956,22 @@ func notifyMayorSlotOpen(workDir, rigName, polecatName, exitType string) {
 	_ = cmd.Run()
 }
 
-func schedulerOpenAfterSlot(result slotOpenSchedulerResult) bool {
-	return !result.Before.Paused && result.Before.Capacity.Max > 0 && result.Before.Capacity.Free > 0 && result.Before.QueuedReady == 0
+func schedulerOpenAfterSlot(result slotOpenSchedulerResult) (slotOpenSchedulerStatus, bool) {
+	status := result.Before
+	if result.Ran {
+		status = result.After
+	}
+	return status, !status.Paused && status.Capacity.Max > 0 && status.Capacity.Free > 0 && status.QueuedReady == 0
 }
 
-func notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType string, result slotOpenSchedulerResult) {
+func notifyMayorSchedulerOpen(townRoot, rigName, polecatName, exitType string, status slotOpenSchedulerStatus) {
 	_, _ = channelevents.EmitToTown(townRoot, "mayor", "SCHEDULER_OPEN", []string{
 		"source=witness",
 		"rig=" + rigName,
 		"polecat=" + polecatName,
 		"exit=" + exitType,
-		"capacity_free=" + strconv.Itoa(result.Before.Capacity.Free),
-		"queued_ready=" + strconv.Itoa(result.Before.QueuedReady),
+		"capacity_free=" + strconv.Itoa(status.Capacity.Free),
+		"queued_ready=" + strconv.Itoa(status.QueuedReady),
 	})
 
 	mayorSession := session.MayorSessionName()
