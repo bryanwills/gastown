@@ -167,6 +167,36 @@ func TestBuildPinnedBDEnvUsesSelectedConnectionMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildPinnedBDEnvPinsRigDatabaseInsideTown(t *testing.T) {
+	townDir := t.TempDir()
+	beadsDir := filepath.Join(townDir, "minime", ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	metadata := []byte(`{"dolt_database":"minime","dolt_server_host":"127.0.0.1","dolt_server_port":4407}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), metadata, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := BuildPinnedBDEnv([]string{
+		"PATH=/usr/bin",
+		"BEADS_DIR=" + filepath.Join(townDir, ".beads"),
+		"BEADS_DOLT_SERVER_DATABASE=hq",
+		"BEADS_DOLT_DATA_DIR=" + filepath.Join(townDir, ".dolt-data"),
+	}, beadsDir)
+	got := envMap(env)
+
+	if got["BEADS_DIR"] != beadsDir {
+		t.Fatalf("BEADS_DIR = %q, want %q in %v", got["BEADS_DIR"], beadsDir, env)
+	}
+	if got["BEADS_DOLT_SERVER_DATABASE"] != "minime" {
+		t.Fatalf("BEADS_DOLT_SERVER_DATABASE = %q, want minime in %v", got["BEADS_DOLT_SERVER_DATABASE"], env)
+	}
+	if value, ok := got["BEADS_DOLT_DATA_DIR"]; ok {
+		t.Fatalf("BEADS_DOLT_DATA_DIR should be stripped, got %q in %v", value, env)
+	}
+}
+
 func TestBuildPinnedBDEnvStripsCaseVariantTargetEnvWhenKeysAreCaseInsensitive(t *testing.T) {
 	withCaseInsensitiveEnvKeys(t)
 
